@@ -1,0 +1,25 @@
+{
+  "name": "twenty4",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yml,yaml}\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "prettier": "^3.8.0",
+    "tsx": "^4.22.0",
+    "turbo": "^2.9.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Turborepo
+.turbo/
+
+# Expo
+.expo/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+coverage/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Reference material — tracked upstream; keep ignored locally so we don't re-add.
+# (Do NOT delete anything under reference/.)
+/reference

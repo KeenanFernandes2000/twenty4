@@ -1,0 +1,29 @@
+{
+  "name": "@twenty4/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./db": "./src/db/index.ts",
+    "./dto": "./src/dto/index.ts",
+    "./edl": "./src/edl.ts",
+    "./enums": "./src/enums.ts",
+    "./analytics": "./src/analytics.ts",
+    "./errors": "./src/errors.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "zod": "^3.23"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10",
+    "postgres": "^3.4.9"
+  }
+}

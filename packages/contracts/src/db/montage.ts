@@ -1,0 +1,76 @@
+/**
+ * montage domain (§5 montage, montage_group_visibility).
+ *
+ * LOAD-BEARING PARTIAL INDEX (§5): on (status, expiry_at) WHERE status = 'published'.
+ * Drives the feed read AND the expiry sweep (find published montages past expiry).
+ * Implemented with Drizzle `.where(sql\`...\`)` on the index.
+ */
+import { sql } from 'drizzle-orm';
+import { date, index, integer, jsonb, pgTable, primaryKey, text, uuid } from 'drizzle-orm/pg-core';
+import { montageStatusEnum, themeEnum } from '../enums.js';
+import type { Edl } from '../edl.js';
+import { createdAt, tsTz, uuidPk } from './_shared.js';
+import { groups } from './groups.js';
+import { users } from './users.js';
+
+export const montages = pgTable(
+  'montage',
+  {
+    id: uuidPk(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    dayBucket: date('day_bucket').notNull(),
+    /** S3 key, null until rendered. */
+    videoPath: text('video_path'),
+    thumbnailPath: text('thumbnail_path'),
+    durationMs: integer('duration_ms'),
+    status: montageStatusEnum('status').notNull().default('not_generated'),
+    /** Resolved theme (concrete, not `Random`). */
+    theme: themeEnum('theme'),
+    musicId: text('music_id'),
+    renderJobId: text('render_job_id'),
+    /** The EDL the intelligence emitted & the renderer consumed (jsonb). */
+    edl: jsonb('edl').$type<Edl>(),
+    createdAt: createdAt(),
+    publishedAt: tsTz('published_at'),
+    /** = published_at + 24h. */
+    expiryAt: tsTz('expiry_at'),
+  },
+  (t) => [
+    // §5 LOAD-BEARING partial index — drives feed + expiry sweeps.
+    index('montage_published_status_expiry_idx')
+      .on(t.status, t.expiryAt)
+      .where(sql`${t.status} = 'published'`),
+    index('montage_user_day_idx').on(t.userId, t.dayBucket),
+  ],
+);
+
+export type Montage = typeof montages.$inferSelect;
+export type NewMontage = typeof montages.$inferInsert;
+
+/* ------------------------- montage_group_visibility ------------------------ */
+/**
+ * One render → many groups (Q1). The authz join for the feed: a montage is
+ * visible to a user iff a row here links it to a group the user is an active
+ * member of (minus block relationships). Uniqueness via composite PK.
+ */
+export const montageGroupVisibility = pgTable(
+  'montage_group_visibility',
+  {
+    montageId: uuid('montage_id')
+      .notNull()
+      .references(() => montages.id, { onDelete: 'cascade' }),
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => groups.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.montageId, t.groupId] }),
+    // Reverse lookup: "published montages visible to this group" (feed by group).
+    index('montage_group_visibility_group_idx').on(t.groupId),
+  ],
+);
+
+export type MontageGroupVisibility = typeof montageGroupVisibility.$inferSelect;
+export type NewMontageGroupVisibility = typeof montageGroupVisibility.$inferInsert;
