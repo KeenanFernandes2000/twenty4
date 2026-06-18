@@ -1,0 +1,18 @@
+# Expo / Metro
+.expo/
+dist/
+web-build/
+expo-env.d.ts.bak
+
+# Native build artifacts (dev client / prebuild)
+android/
+ios/
+*.orig.*
+
+# Metro cache
+.metro-health-check*
+
+# Misc
+node_modules/
+npm-debug.*
+*.tsbuildinfo
