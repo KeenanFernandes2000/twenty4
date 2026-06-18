@@ -27,3 +27,8 @@ coverage/
 # Reference material — tracked upstream; keep ignored locally so we don't re-add.
 # (Do NOT delete anything under reference/.)
 /reference
+
+# Render smoke-test output artifacts
+.smoke-out/
+.gate-out/
+.harness-out/

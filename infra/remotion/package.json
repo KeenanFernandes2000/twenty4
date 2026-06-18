@@ -1,0 +1,33 @@
+{
+  "name": "@twenty4/remotion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "twenty4 montage Remotion project — the <Montage/> composition reads an EDL (@twenty4/contracts/edl) as inputProps and renders the 1080×1920 / 30s / 30fps MP4.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./entry": "./src/index.ts",
+    "./sampleEdl": "./src/sampleEdl.ts",
+    "./tracks": "./src/music/tracks.ts",
+    "./theme": "./src/theme.ts",
+    "./Montage": "./src/Montage.tsx"
+  },
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@twenty4/contracts": "workspace:*",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.481",
+    "zod": "^3.23"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.481",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.6.0"
+  }
+}
