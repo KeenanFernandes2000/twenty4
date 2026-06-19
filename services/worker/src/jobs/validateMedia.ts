@@ -83,11 +83,20 @@ import {
   zonedWallClockToUtc,
   type WallClockFields,
 } from '@twenty4/contracts/dayWindow';
+import { MAX_ITEM_BYTES } from '@twenty4/contracts/dto';
 import { db } from '../db.js';
 import { env } from '../env.js';
-import { buckets, downloadObject } from '../storage.js';
+import { buckets, downloadObject, headObject } from '../storage.js';
 import { FFPROBE_PATH } from '../media/probe.js';
 import { execa } from 'execa';
+
+/**
+ * The worker-side download cap = `min(env override, §10 200MB hard limit)` — the
+ * SAME ceiling the API enforces at /complete. The env can only TIGHTEN it. Used as
+ * defense-in-depth so a swapped OVERSIZE object can't be fully pulled even if the
+ * ETag check were somehow bypassed.
+ */
+const MAX_DOWNLOAD_BYTES = Math.min(env.MAX_UPLOAD_BYTES, MAX_ITEM_BYTES);
 
 /** What resolved the capture time (recorded in metadata_summary, non-PII). */
 type TimeSource = 'exif' | 'video_creation_time' | 'none';
@@ -95,6 +104,7 @@ type TimeSource = 'exif' | 'video_creation_time' | 'none';
 /** Why a verdict was reached (for logs/tests; never user content). */
 type Reason =
   | 'row_missing'
+  | 'object_changed'
   | 'out_of_window'
   | 'no_capture_time'
   | 'capture_time_unverified'
@@ -269,6 +279,42 @@ export async function validateMedia(
   const deviceTz = row.deviceTimezone ?? 'UTC';
   const rowBucket = row.dayBucket; // already a YYYY-MM-DD string (date column)
 
+  /* ---- TOCTOU pin: the object must be UNCHANGED since /complete ----------- */
+  // The presigned PUT stays reusable until its TTL, so a client could re-PUT a
+  // swapped/oversize object to the same key AFTER passing the size/type gate at
+  // /complete. We re-Head here and require the current ETag to equal the one
+  // /complete pinned on the row. A mismatch (or a now-missing object) → the bytes
+  // we'd process are NOT the validated ones → mark invalid/failed and DO NOT
+  // download/process. (Rows from before this column existed have a null pin; we
+  // can only enforce when a pin was recorded.)
+  if (row.objectEtag) {
+    const head = await headObject(buckets.raw, row.storagePath);
+    const currentEtag = head?.etag ?? null;
+    if (currentEtag !== row.objectEtag) {
+      await persist(mediaId, {
+        validationStatus: 'invalid',
+        processingStatus: 'failed',
+        deviceTimeSuspicious,
+        captureTimeUnverified: false,
+        metadata: {
+          timeSource: 'none',
+          reason: 'object_changed',
+          pinnedEtag: row.objectEtag,
+          currentEtag,
+          deviceTimeSuspicious,
+        },
+      });
+      return {
+        mediaId,
+        validationStatus: 'invalid',
+        timeSource: 'none',
+        deviceTimeSuspicious,
+        captureTimeUnverified: false,
+        reason: 'object_changed',
+      };
+    }
+  }
+
   /* ---- resolve a RELIABLE embedded capture time (anti-backdating) -------- */
   let tmp: string | undefined;
   let captureTime: Date | null = null;
@@ -278,7 +324,9 @@ export async function validateMedia(
     tmp = await mkdtemp(path.join(tmpdir(), 'twenty4-validate-'));
     const ext = path.extname(row.storagePath) || '.bin';
     const local = path.join(tmp, `media${ext}`);
-    await downloadObject(buckets.raw, row.storagePath, local);
+    // Cap the download at the §10 ceiling (defense-in-depth): a swapped oversize
+    // object can't be fully pulled, even past the ETag check.
+    await downloadObject(buckets.raw, row.storagePath, local, MAX_DOWNLOAD_BYTES);
 
     const isImage = (row.contentType ?? row.mediaType).startsWith('image')
       ? true

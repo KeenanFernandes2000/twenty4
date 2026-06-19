@@ -40,7 +40,7 @@ import { dailyMediaItems } from '@twenty4/contracts/db';
 import { resolveDayBucket } from '@twenty4/contracts/dayWindow';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { db, closeDb } from '../src/db.js';
-import { s3, buckets, closeStorage } from '../src/storage.js';
+import { s3, buckets, closeStorage, headObject } from '../src/storage.js';
 import { validateMedia } from '../src/jobs/validateMedia.js';
 import { makeTestVideo } from '../src/media/index.js';
 
@@ -110,6 +110,8 @@ async function insertRow(args: {
   deviceTimezone?: string;
   deviceTimestamp?: Date | null;
   originalTimestamp?: Date | null;
+  /** TOCTOU pin: the ETag /complete recorded for the validated object. */
+  objectEtag?: string | null;
 }): Promise<string> {
   const [row] = await db
     .insert(dailyMediaItems)
@@ -123,12 +125,18 @@ async function insertRow(args: {
       deviceTimezone: args.deviceTimezone ?? TZ,
       deviceTimestamp: args.deviceTimestamp ?? null,
       originalTimestamp: args.originalTimestamp ?? null,
+      objectEtag: args.objectEtag ?? null,
       validationStatus: 'pending',
       processingStatus: 'validating',
     })
     .returning();
   createdMediaIds.push(row!.id);
   return row!.id;
+}
+
+/** PUT bytes to an EXACT key (used to SWAP the object after /complete pinned it). */
+async function putRawAt(key: string, body: Buffer): Promise<void> {
+  await s3.send(new PutObjectCommand({ Bucket: buckets.raw, Key: key, Body: body }));
 }
 
 async function reload(id: string) {
@@ -460,5 +468,80 @@ describe('validate-media — hardened freshness model on real bytes (live PG + M
     const res = await validateMedia(id, now);
     expect(res.validationStatus).toBe('invalid');
     expect(res.reason).toBe('out_of_window');
+  });
+
+  it('11. TOCTOU — object SWAPPED after /complete pinned the ETag → INVALID/failed (object_changed, swapped bytes NOT processed)', async () => {
+    // Real exploit: /complete HeadObjects the landed object and pins its ETag, but
+    // the presigned PUT stays reusable until its TTL. The client then re-PUTs
+    // DIFFERENT bytes to the same key. The worker must detect the ETag drift BEFORE
+    // downloading and refuse to process the swapped bytes.
+    const now = new Date();
+    const bucket = resolveDayBucket(now, TZ);
+
+    // 1) The legit object that PASSED /complete: a VALID in-window EXIF JPEG.
+    const capture = new Date(now);
+    capture.setHours(14, 30, 0, 0);
+    const legit = await makeJpeg(capture);
+    const key = await putRaw(bucket, 'jpg', legit);
+
+    // 2) /complete pins the ETag of exactly THIS object (real HeadObject ETag).
+    const pinned = await headObject(buckets.raw, key);
+    expect(pinned?.etag).toBeTruthy();
+
+    const id = await insertRow({
+      dayBucket: bucket,
+      mediaType: 'photo',
+      contentType: 'image/jpeg',
+      storageKey: key,
+      capturedInApp: true,
+      deviceTimestamp: now,
+      objectEtag: pinned!.etag,
+    });
+
+    // 3) SWAP: re-PUT DIFFERENT bytes (OLD EXIF — would be out_of_window if it were
+    //    actually validated) to the SAME key. New bytes → new ETag.
+    const old = new Date(now.getTime() - 12 * 24 * 3600 * 1000);
+    old.setHours(8, 0, 0, 0);
+    const swapped = await makeJpeg(old);
+    await putRawAt(key, swapped);
+    const afterSwap = await headObject(buckets.raw, key);
+    expect(afterSwap?.etag).not.toBe(pinned!.etag); // sanity: the object really changed.
+
+    // 4) The worker must catch the ETag drift and refuse to process.
+    const res = await validateMedia(id, now);
+    expect(res.validationStatus).toBe('invalid');
+    expect(res.reason).toBe('object_changed'); // NOT 'out_of_window' — never processed the swapped bytes.
+
+    const row = await reload(id);
+    expect(row.validationStatus).toBe('invalid');
+    expect(row.processingStatus).toBe('failed');
+    const meta = row.metadataSummary as { reason?: string; pinnedEtag?: string; currentEtag?: string };
+    expect(meta.reason).toBe('object_changed');
+    expect(meta.pinnedEtag).toBe(pinned!.etag);
+    expect(meta.currentEtag).toBe(afterSwap!.etag);
+  });
+
+  it('12. TOCTOU — UNCHANGED object (ETag matches the pin) still validates normally', async () => {
+    // The pin must not break the happy path: when the object is the SAME one
+    // /complete pinned, validation proceeds as usual.
+    const now = new Date();
+    const bucket = resolveDayBucket(now, TZ);
+    const capture = new Date(now);
+    capture.setHours(14, 30, 0, 0);
+    const jpeg = await makeJpeg(capture);
+    const key = await putRaw(bucket, 'jpg', jpeg);
+    const pinned = await headObject(buckets.raw, key);
+
+    const id = await insertRow({
+      dayBucket: bucket,
+      mediaType: 'photo',
+      contentType: 'image/jpeg',
+      storageKey: key,
+      objectEtag: pinned!.etag, // object UNCHANGED since the pin.
+    });
+
+    const res = await validateMedia(id, new Date());
+    expect(res.validationStatus).toBe('valid');
+    expect(res.timeSource).toBe('exif');
   });
 });

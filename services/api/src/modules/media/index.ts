@@ -201,11 +201,27 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
 
   /* ------------------------- POST /media/:id/complete ---------------------- */
   // Mark the item uploaded and enqueue the §6 validate-media job. Owner-only.
+  //
+  // IDEMPOTENT (replay-safe): /complete only drives the row from the post-upload
+  // 'uploaded' state to 'validating' ONCE, and enqueues exactly one validate-media
+  // job. A REPLAY (the row already left 'uploaded') is a no-op that returns the
+  // current row state with 200 — never a second enqueue. The single-claim race is
+  // closed by a CONDITIONAL update (uploaded → validating) gated on the current
+  // status; only the caller whose UPDATE returns a row enqueues.
   app.post('/:id/complete', async (req, reply) => {
     const { id } = req.params as { id: string };
     const me = req.user!;
 
     const row = await loadOwnedOr404(id, me.id);
+
+    // Replay guard: only a row still in the post-upload 'uploaded' state is eligible
+    // to be completed. If it has already moved on (validating / valid / invalid /
+    // failed / deleted), this is a duplicate /complete — return the current state
+    // idempotently (200) WITHOUT re-Heading, re-gating, or re-enqueueing.
+    if (row.processingStatus !== 'uploaded') {
+      reply.code(200);
+      return toItemResponse(row);
+    }
 
     // Post-upload gate: HeadObject the landed raw object. A presigned PUT can't
     // enforce size/content-type up-front, so we verify here. On a violation we
@@ -252,13 +268,34 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
       );
     }
 
-    // Move to 'validating' so the Today screen can show a spinner; the worker
-    // sets the terminal validation/processing state.
+    // TOCTOU pin: persist the ETag + verified size of the EXACT object that passed
+    // the gate. The worker re-Heads before downloading and refuses to process if the
+    // ETag differs (a client re-PUT a swapped object to the same key, since the
+    // presigned PUT stays reusable until its TTL). Set ATOMICALLY with the
+    // uploaded → validating transition; the `processing_status = 'uploaded'`
+    // predicate means only ONE concurrent /complete wins the claim (single enqueue).
     const [updated] = await db
       .update(dailyMediaItems)
-      .set({ processingStatus: 'validating' })
-      .where(eq(dailyMediaItems.id, row.id))
+      .set({
+        processingStatus: 'validating',
+        objectEtag: head.etag,
+        objectSize: head.sizeBytes,
+      })
+      .where(
+        and(
+          eq(dailyMediaItems.id, row.id),
+          eq(dailyMediaItems.processingStatus, 'uploaded'),
+        ),
+      )
       .returning();
+
+    // Lost the race: a concurrent /complete already claimed the transition (and
+    // enqueued). Return the current row idempotently — do NOT enqueue a second job.
+    if (!updated) {
+      const current = await loadOwnedOr404(id, me.id);
+      reply.code(200);
+      return toItemResponse(current);
+    }
 
     const job: ValidateMediaJob = {
       mediaId: row.id,
@@ -267,7 +304,7 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
     await enqueueValidateMedia(job);
 
     reply.code(202);
-    return toItemResponse(updated ?? row);
+    return toItemResponse(updated);
   });
 
   /* ------------------------------ GET /media/today ------------------------- */

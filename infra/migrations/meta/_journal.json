@@ -29,6 +29,13 @@
       "when": 1781849470441,
       "tag": "0003_media_capture_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781853197220,
+      "tag": "0004_media_object_pin",
+      "breakpoints": true
     }
   ]
 }

@@ -216,6 +216,12 @@ export async function objectSize(
 export interface ObjectHead {
   sizeBytes: number | null;
   contentType: string | null;
+  /**
+   * S3 ETag (surrounding quotes stripped) of the EXACT object that landed. Pinned
+   * on the row at /complete so the worker can re-Head before downloading and refuse
+   * to process a swapped object (the presigned PUT stays reusable until its TTL).
+   */
+  etag: string | null;
 }
 
 /**
@@ -237,6 +243,7 @@ export async function objectHead(
     return {
       sizeBytes: head.ContentLength ?? null,
       contentType: head.ContentType ?? null,
+      etag: head.ETag ? head.ETag.replace(/^"+|"+$/g, '') : null,
     };
   } catch {
     return null;

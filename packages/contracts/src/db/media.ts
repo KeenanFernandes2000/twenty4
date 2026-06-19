@@ -70,6 +70,16 @@ export const dailyMediaItems = pgTable(
     durationMs: integer('duration_ms'),
     /** Bytes (≤200MB/item, §10). bigint to be safe. */
     sizeBytes: bigint('size_bytes', { mode: 'number' }),
+    /**
+     * TOCTOU pin (set on POST /media/:id/complete): the S3 ETag + verified byte
+     * size of the object that PASSED the post-upload size/type gate. The worker
+     * re-Heads the object BEFORE downloading and refuses to process if the current
+     * ETag differs — so a client can't re-PUT a swapped/oversize object to the same
+     * key after passing the gate (the presigned PUT stays reusable until its TTL).
+     */
+    objectEtag: text('object_etag'),
+    /** Verified size (bytes) of the object pinned at /complete (matches `objectEtag`). */
+    objectSize: bigint('object_size', { mode: 'number' }),
     width: integer('width'),
     height: integer('height'),
     /** Non-PII derived metadata (dims, codec, exif-presence flags) — no content. */

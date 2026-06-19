@@ -21,12 +21,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { eq, sql } from 'drizzle-orm';
+import { Queue } from 'bullmq';
 import { dailyMediaItems } from '@twenty4/contracts/db';
 import { resolveDayBucket } from '@twenty4/contracts/dayWindow';
 import { buildApp } from '../src/app.js';
 import { db, closeDb } from '../src/db/index.js';
 import { closeRedis } from '../src/redis/index.js';
-import { closeQueues } from '../src/queue/producers.js';
+import {
+  closeQueues,
+  MEDIA_QUEUE,
+  VALIDATE_MEDIA_JOB,
+} from '../src/queue/producers.js';
 import {
   presignPut,
   presignGet,
@@ -54,6 +59,30 @@ const TINY_JPEG = Buffer.from(
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AvwA//9k=',
   'base64',
 );
+
+/** Parse REDIS_URL into BullMQ connection options (mirrors the producer). */
+function redisConnection(): { host: string; port: number; maxRetriesPerRequest: null } {
+  const u = new URL(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
+  return { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null };
+}
+
+/**
+ * Count the validate-media jobs CURRENTLY enqueued for `mediaId`. The worker isn't
+ * running in this suite, so a successfully-enqueued job sits in `waiting` — we read
+ * the queue directly and filter by payload. Proves /complete enqueues exactly once
+ * (no duplicate jobs on replay).
+ */
+async function countEnqueuedFor(mediaId: string): Promise<number> {
+  const q = new Queue(MEDIA_QUEUE, { connection: redisConnection() });
+  try {
+    const jobs = await q.getJobs(['waiting', 'delayed', 'active', 'paused'], 0, 500);
+    return jobs.filter(
+      (j) => j.name === VALIDATE_MEDIA_JOB && (j.data as { mediaId?: string }).mediaId === mediaId,
+    ).length;
+  } finally {
+    await q.close();
+  }
+}
 
 describe('media — upload init/complete + today + download-url (live PG + redis + MinIO)', () => {
   let app: FastifyInstance;
@@ -251,6 +280,117 @@ describe('media — upload init/complete + today + download-url (live PG + redis
     const body = res.json() as { id: string; processingStatus: string };
     expect(body.id).toBe(createdId);
     expect(body.processingStatus).toBe('validating');
+  });
+
+  /* ----------------- FIX 1: /complete pins the object ETag + size ---------- */
+
+  it('POST /media/:id/complete PINS the landed object ETag + verified size on the row', async () => {
+    // Init + PUT real bytes, then complete; the row must carry the HeadObject ETag
+    // and the verified size so the worker can detect a post-gate swap (TOCTOU pin).
+    const init = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/jpeg',
+        sizeBytes: TINY_JPEG.length,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        deviceTimestamp: new Date().toISOString(),
+      },
+    });
+    expect(init.statusCode).toBe(201);
+    const { id, uploadUrl } = init.json() as { id: string; uploadUrl: string };
+    const put = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: TINY_JPEG,
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+    expect(put.ok).toBe(true);
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(complete.statusCode).toBe(202);
+
+    const [row] = await db
+      .select()
+      .from(dailyMediaItems)
+      .where(eq(dailyMediaItems.id, id))
+      .limit(1);
+    expect(row!.objectEtag).toBeTruthy();
+    // ETag is stored WITHOUT the surrounding quotes S3 returns.
+    expect(row!.objectEtag).not.toMatch(/"/);
+    expect(row!.objectSize).toBe(TINY_JPEG.length);
+  });
+
+  /* ----------------- FIX 2: /complete is idempotent (replay-safe) ---------- */
+
+  it('a DOUBLE POST /media/:id/complete is idempotent — enqueues exactly once', async () => {
+    const init = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/jpeg',
+        sizeBytes: TINY_JPEG.length,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        deviceTimestamp: new Date().toISOString(),
+      },
+    });
+    expect(init.statusCode).toBe(201);
+    const { id, uploadUrl } = init.json() as { id: string; uploadUrl: string };
+    const put = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: TINY_JPEG,
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+    expect(put.ok).toBe(true);
+
+    // First /complete: claims the transition → 202 + exactly one enqueued job.
+    const first = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(first.statusCode).toBe(202);
+    expect((first.json() as { processingStatus: string }).processingStatus).toBe('validating');
+    expect(await countEnqueuedFor(id)).toBe(1);
+
+    // Second /complete (replay): idempotent 200, current state, NO second job.
+    const second = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(second.statusCode).toBe(200);
+    expect((second.json() as { id: string }).id).toBe(id);
+    expect((second.json() as { processingStatus: string }).processingStatus).toBe('validating');
+
+    // CRITICAL: still exactly one job — the replay did NOT re-enqueue.
+    expect(await countEnqueuedFor(id)).toBe(1);
+
+    // A THIRD replay is likewise a no-op (still one job).
+    const third = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(third.statusCode).toBe(200);
+    expect(await countEnqueuedFor(id)).toBe(1);
+
+    // Drain the enqueued job so it doesn't linger in Redis for other runs.
+    const q = new Queue(MEDIA_QUEUE, { connection: redisConnection() });
+    const jobs = await q.getJobs(['waiting', 'delayed', 'active', 'paused'], 0, 500);
+    for (const j of jobs) {
+      if ((j.data as { mediaId?: string }).mediaId === id) await j.remove();
+    }
+    await q.close();
   });
 
   it('GET /media/today lists the caller item for today bucket', async () => {
