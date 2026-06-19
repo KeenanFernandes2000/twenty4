@@ -10,6 +10,7 @@ import { closeDb } from './db/index.js';
 import { closeRedis } from './redis/index.js';
 import { closeStorage } from './storage/s3.js';
 import { closeQueues } from './queue/producers.js';
+import { closeHttpRateLimit } from './lib/httpRateLimit.js';
 
 async function main(): Promise<void> {
   const app = await buildApp();
@@ -28,7 +29,12 @@ async function main(): Promise<void> {
 
     try {
       await app.close(); // stop accepting connections, run onClose hooks
-      await Promise.allSettled([closeQueues(), closeRedis(), closeDb()]);
+      await Promise.allSettled([
+        closeQueues(),
+        closeRedis(),
+        closeHttpRateLimit(),
+        closeDb(),
+      ]);
       closeStorage();
       app.log.info('shutdown complete');
       process.exit(0);

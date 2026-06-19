@@ -15,10 +15,12 @@
  * model); Better Auth generates uuids for session/account/verification.
  */
 import { betterAuth } from 'better-auth';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { emailOTP } from 'better-auth/plugins/email-otp';
 import { phoneNumber } from 'better-auth/plugins/phone-number';
 import { bearer } from 'better-auth/plugins/bearer';
+import { eq } from 'drizzle-orm';
 import * as schema from '@twenty4/contracts/db';
 
 import { db } from '../db/index.js';
@@ -28,6 +30,25 @@ import { betterAuthSocialConfig } from './socialProviders.js';
 
 /** 30 days — long-lived mobile sessions; revocable server-side at any time. */
 const SESSION_EXPIRES_IN = 60 * 60 * 24 * 30;
+
+/**
+ * Account statuses that must NOT be able to mint a NEW session (sign-in/verify).
+ * Encoded into the thrown APIError's `code` so the twenty4 façade can translate
+ * each into its precise contract error (banned→403 banned, etc.).
+ */
+const BLOCKED_SIGNIN_STATUSES = new Set(['suspended', 'banned', 'deleted']);
+
+/**
+ * Built-in Better Auth user-mutation endpoints we DENY. Profile writes must go
+ * through the validated façade PATCH /users/me ONLY — these BA endpoints would
+ * write name/image → display_name/profile_photo_url with NO zod validation,
+ * bypassing our rules and able to store a value that bricks GET /users/me.
+ */
+const DENIED_BA_PATHS = new Set([
+  '/update-user',
+  '/delete-user',
+  '/change-email',
+]);
 
 export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
@@ -111,6 +132,59 @@ export const auth = betterAuth({
     },
   },
 
+  // Defense-in-depth route-level limiter (the façade adds explicit per-identifier
+  // OTP-send + verify-attempt counters in lib/rateLimit.ts; this caps the raw BA
+  // endpoints too). Storage is in-memory here; the façade's Redis counters are
+  // the cross-instance source of truth for the security-critical guarantees.
+  rateLimit: {
+    enabled: true,
+    window: 60,
+    max: 60,
+    customRules: {
+      '/sign-in/email-otp': { window: 600, max: 10 },
+      '/email-otp/send-verification-otp': { window: 600, max: 10 },
+      '/phone-number/send-otp': { window: 600, max: 10 },
+      '/phone-number/verify': { window: 600, max: 10 },
+    },
+  },
+
+  // Lifecycle guards.
+  databaseHooks: {
+    session: {
+      create: {
+        // Block NEW session creation (sign-in/verify) for non-active accounts so
+        // a banned/suspended/deleted user can NEVER mint a fresh token. The
+        // façade translates the encoded code into the precise contract error.
+        before: async (session) => {
+          const [user] = await db
+            .select({ accountStatus: schema.users.accountStatus })
+            .from(schema.users)
+            .where(eq(schema.users.id, session.userId))
+            .limit(1);
+          if (user && BLOCKED_SIGNIN_STATUSES.has(user.accountStatus)) {
+            throw new APIError('FORBIDDEN', {
+              message: `account ${user.accountStatus}`,
+              code: `ACCOUNT_${user.accountStatus.toUpperCase()}`,
+            });
+          }
+        },
+      },
+    },
+  },
+
+  // Deny built-in user-mutation endpoints before they run — profile writes must
+  // go through the validated façade PATCH /users/me only.
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (DENIED_BA_PATHS.has(ctx.path)) {
+        throw new APIError('FORBIDDEN', {
+          message: 'endpoint disabled; use PATCH /users/me',
+          code: 'ENDPOINT_DISABLED',
+        });
+      }
+    }),
+  },
+
   socialProviders: betterAuthSocialConfig(),
 
   plugins: [
@@ -119,6 +193,10 @@ export const auth = betterAuth({
     emailOTP({
       otpLength: 6,
       expiresIn: 600,
+      // Store the OTP HASHED at rest in the verification table (Better Auth 1.6
+      // storeOTP). The plaintext code is still delivered via the transport; only
+      // the persisted value is hashed, so a DB read can't replay a live OTP.
+      storeOTP: 'hashed',
       // Auto-create + sign in a user on first valid sign-in OTP.
       sendVerificationOnSignUp: false,
       async sendVerificationOTP({ email, otp, type }) {

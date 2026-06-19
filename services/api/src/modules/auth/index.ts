@@ -34,6 +34,31 @@ import { isSocialProviderStubbed } from '../../auth/socialProviders.js';
 import { redis } from '../../redis/index.js';
 import { db } from '../../db/index.js';
 import { env } from '../../env.js';
+import {
+  throttleOtpSend,
+  consumeVerifyBudget,
+  clearVerifyBudget,
+} from '../../lib/rateLimit.js';
+
+/**
+ * Translate a Better Auth APIError thrown by the session-create databaseHook
+ * (ACCOUNT_SUSPENDED / ACCOUNT_BANNED / ACCOUNT_DELETED) into the precise
+ * twenty4 contract error. Returns the mapped ApiError, or null if not one of
+ * ours (caller re-throws the original / treats as bad code).
+ */
+function mapBlockedSignin(err: unknown): ReturnType<typeof errors.banned> | null {
+  const code = (err as { body?: { code?: string } })?.body?.code;
+  switch (code) {
+    case 'ACCOUNT_SUSPENDED':
+      return errors.suspended('Account suspended');
+    case 'ACCOUNT_BANNED':
+      return errors.banned('Account banned');
+    case 'ACCOUNT_DELETED':
+      return errors.unauthorized('Account no longer exists');
+    default:
+      return null;
+  }
+}
 
 /** Redis key for an OTP challenge → identifier+method mapping. */
 const challengeKey = (id: string): string => `auth:challenge:${id}`;
@@ -61,7 +86,10 @@ function tokenFromHeaders(headers: Headers): string | null {
 
 export const authModule: FastifyPluginAsync = async (app) => {
   // ---- POST /auth/start ----------------------------------------------------
-  app.post('/start', async (req, reply) => {
+  // Per-IP HTTP limiter (defense-in-depth; the per-identifier + per-IP Redis
+  // counters in throttleOtpSend are the hard guarantee). Generous so the
+  // identifier/IP counters are what actually bite first.
+  app.post('/start', { config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } }, async (req, reply) => {
     const body = authStartRequestSchema.parse(req.body);
 
     // Social entry (apple/google): stubbed. Return the OAuth authorize URL once
@@ -83,6 +111,11 @@ export const authModule: FastifyPluginAsync = async (app) => {
     if (!body.identifier) {
       throw errors.validation('identifier is required for phone/email');
     }
+
+    // Throttle OTP sends per-identifier AND per-IP (≤5 / 10min each) BEFORE we
+    // ask Better Auth to mint+send a code. Exceeding → 429 rate_limited. This
+    // also prevents using re-issue to spam codes / enumerate.
+    await throttleOtpSend({ identifier: body.identifier, ip: req.ip });
 
     // Send a REAL sign-in OTP via Better Auth (transport logs + caches in dev).
     if (body.method === 'email') {
@@ -113,7 +146,9 @@ export const authModule: FastifyPluginAsync = async (app) => {
   });
 
   // ---- POST /auth/verify ---------------------------------------------------
-  app.post('/verify', async (req, reply) => {
+  // Per-IP HTTP limiter (defense-in-depth). The per-IDENTIFIER verify-attempt
+  // budget in consumeVerifyBudget is the cross-reissue hard guarantee.
+  app.post('/verify', { config: { rateLimit: { max: 30, timeWindow: '10 minutes' } } }, async (req, reply) => {
     const body = authVerifyRequestSchema.parse(req.body);
 
     await ensureRedis();
@@ -121,26 +156,44 @@ export const authModule: FastifyPluginAsync = async (app) => {
     if (!raw) throw errors.unauthorized('challenge expired or invalid');
     const challenge = JSON.parse(raw) as Challenge;
 
+    // Enforce + record the per-identifier verify-attempt budget (≤5 / 10min)
+    // BEFORE attempting. The counter is keyed on the IDENTIFIER, not the code or
+    // challenge, so re-calling /auth/start (re-issuing an OTP) does NOT reset it
+    // → closes the brute-force-reset-via-reissue hole. Throws 429 when exceeded.
+    await consumeVerifyBudget(challenge.identifier);
+
     let token: string | null = null;
     let isNewUser = false;
 
-    if (challenge.method === 'email') {
-      const { headers, response } = await auth.api.signInEmailOTP({
-        body: { email: challenge.identifier, otp: body.code },
-        returnHeaders: true,
-      });
-      token = tokenFromHeaders(headers);
-      isNewUser = Boolean((response as { isRegistration?: boolean })?.isRegistration);
-    } else {
-      const { headers, response } = await auth.api.verifyPhoneNumber({
-        body: { phoneNumber: challenge.identifier, code: body.code },
-        returnHeaders: true,
-      });
-      token = tokenFromHeaders(headers);
-      isNewUser = Boolean((response as { isRegistration?: boolean })?.isRegistration);
+    try {
+      if (challenge.method === 'email') {
+        const { headers, response } = await auth.api.signInEmailOTP({
+          body: { email: challenge.identifier, otp: body.code },
+          returnHeaders: true,
+        });
+        token = tokenFromHeaders(headers);
+        isNewUser = Boolean((response as { isRegistration?: boolean })?.isRegistration);
+      } else {
+        const { headers, response } = await auth.api.verifyPhoneNumber({
+          body: { phoneNumber: challenge.identifier, code: body.code },
+          returnHeaders: true,
+        });
+        token = tokenFromHeaders(headers);
+        isNewUser = Boolean((response as { isRegistration?: boolean })?.isRegistration);
+      }
+    } catch (err) {
+      // A suspended/banned/deleted account is blocked at session-create by the
+      // databaseHook → translate into the precise contract error so a blocked
+      // account can NEVER complete verify to mint a new session.
+      const mapped = mapBlockedSignin(err);
+      if (mapped) throw mapped;
+      throw err;
     }
 
     if (!token) throw errors.unauthorized('invalid or expired code');
+
+    // Genuine success → reset the verify-attempt budget for this identifier.
+    await clearVerifyBudget(challenge.identifier);
 
     // Stamp auth_provider on first sign-in (it carries a DB default of 'email').
     const session = await auth.api.getSession({
@@ -183,10 +236,43 @@ export const authModule: FastifyPluginAsync = async (app) => {
     return sessionTokensSchema.parse(tokens);
   });
 
+  // ---- Deny Better Auth's user-mutation endpoints --------------------------
+  // These façade routes are registered BEFORE the Better Auth catch-all (same
+  // scope) so they WIN for these exact paths. Profile writes (display_name /
+  // profile_photo_url) must go through the validated PATCH /users/me ONLY; the
+  // raw BA endpoints would write unvalidated name/image and could store a value
+  // that bricks GET /users/me. We hard-deny here (defense-in-depth with the BA
+  // `hooks.before` guard in betterAuth.ts).
+  for (const path of ['/update-user', '/delete-user', '/change-email']) {
+    app.route({
+      method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      url: path,
+      handler: async () => {
+        throw errors.forbidden('endpoint disabled; use PATCH /users/me');
+      },
+    });
+  }
+
   // ---- POST /auth/refresh --------------------------------------------------
   app.post('/refresh', async (req, reply) => {
     const resolved = await resolveSession(req);
     if (!resolved) throw errors.unauthorized('no active session');
+
+    // Re-check account status BEFORE returning fresh tokens (same gate as
+    // requireSession): a suspended/banned/deleted account must NOT be able to
+    // refresh into a fresh, usable token even with an otherwise-valid session.
+    switch (resolved.user.accountStatus) {
+      case 'suspended':
+        throw errors.suspended('Account suspended');
+      case 'banned':
+        throw errors.banned('Account banned');
+      case 'deleted':
+        throw errors.unauthorized('Account no longer exists');
+      case 'active':
+        break;
+      default:
+        throw errors.unauthorized('Authentication required');
+    }
 
     const tokens: SessionTokens = {
       accessToken: resolved.session.token,

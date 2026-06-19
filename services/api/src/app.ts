@@ -15,6 +15,7 @@ import { ZodError } from 'zod';
 import { ApiError, errors as apiErrors } from '@twenty4/contracts/errors';
 
 import { env } from './env.js';
+import { registerHttpRateLimit } from './lib/httpRateLimit.js';
 import { healthRoutes } from './routes/health.js';
 import { authModule } from './modules/auth/index.js';
 import { betterAuthHandler } from './auth/handler.js';
@@ -50,6 +51,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     credentials: true,
   });
   await app.register(sensible);
+
+  // Route-level HTTP rate limiting (opt-in via config.rateLimit). Registered
+  // globally-disabled; the auth façade opts its OTP routes in. Defense-in-depth
+  // on top of the explicit Redis counters in lib/rateLimit.ts.
+  await registerHttpRateLimit(app);
 
   // Central error mapper → ApiError → `{ error }` envelope.
   app.setErrorHandler((err, req, reply) => {
