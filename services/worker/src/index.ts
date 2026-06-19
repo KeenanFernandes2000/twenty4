@@ -14,8 +14,16 @@
  * Then: `getRenderer().render(edl, { srcMap, outDir })` → upload videoPath/thumb.
  */
 import { Worker, type Job } from 'bullmq';
-import { MEDIA_QUEUE, VALIDATE_MEDIA_JOB, type ValidateMediaJob } from './queue.js';
+import {
+  MEDIA_QUEUE,
+  VALIDATE_MEDIA_JOB,
+  MONTAGE_QUEUE,
+  RENDER_MONTAGE_JOB,
+  type ValidateMediaJob,
+  type RenderMontageJob,
+} from './queue.js';
 import { validateMedia } from './jobs/validateMedia.js';
+import { renderMontage } from './jobs/renderMontage.js';
 import { closeDb } from './db.js';
 import { closeStorage } from './storage.js';
 
@@ -30,6 +38,8 @@ export type {
 export * as media from './media/index.js';
 export { validateMedia } from './jobs/validateMedia.js';
 export type { ValidateMediaResult } from './jobs/validateMedia.js';
+export { renderMontage } from './jobs/renderMontage.js';
+export type { RenderMontageResult } from './jobs/renderMontage.js';
 
 /* ----------------------------- BullMQ workers ------------------------------ */
 
@@ -70,14 +80,49 @@ export function startMediaWorker(): Worker<ValidateMediaJob> {
   return worker;
 }
 
+/**
+ * Start the montage-render Worker (§7.3). Consumes `render-montage` at concurrency
+ * 1 (one self-hosted renderer; the EDL build + headless Chrome already saturate the
+ * box). §7.4: a job throws on a render fault so BullMQ retries (attempts:2 = one
+ * retry); on the FINAL attempt `renderMontage` marks the row `failed` + cleans up
+ * partial S3 BEFORE rethrowing, so the row never sticks in `generating` and no
+ * orphaned objects are left. The worker process itself never crashes on a bad job.
+ */
+export function startRenderWorker(): Worker<RenderMontageJob> {
+  const worker = new Worker<RenderMontageJob>(
+    MONTAGE_QUEUE,
+    async (job: Job<RenderMontageJob>) => {
+      if (job.name !== RENDER_MONTAGE_JOB) return; // ignore expire/cleanup (Slice 7)
+      const maxAttempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
+      return renderMontage(job.data.montageId, isFinalAttempt);
+    },
+    { connection: redisConnection(), concurrency: 1 },
+  );
+  worker.on('failed', (job, err) => {
+    // eslint-disable-next-line no-console
+    console.error(`[worker] render-montage job ${job?.id} failed:`, err.message);
+  });
+  return worker;
+}
+
 // Running this file directly boots the worker process (queue consumers).
 if (import.meta.url === `file://${process.argv[1]}`) {
   const mediaWorker = startMediaWorker();
+  const renderWorker = startRenderWorker();
   // eslint-disable-next-line no-console
-  console.log('@twenty4/worker: media-validation worker running.');
+  console.log('@twenty4/worker: media-validation + montage-render workers running.');
 
   const shutdown = async (): Promise<void> => {
     await mediaWorker.close();
+    await renderWorker.close();
+    // Tear down the shared headless browser cleanly (the renderer caches one).
+    try {
+      const { getRenderer } = await import('./render/index.js');
+      await getRenderer().close?.();
+    } catch {
+      /* nothing to close */
+    }
     await closeDb();
     closeStorage();
     process.exit(0);

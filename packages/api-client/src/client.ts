@@ -48,6 +48,18 @@ import type {
   TodayMediaResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 5 (montage: generate → review → publish, replace/republish) DTOs.
+import type {
+  GenerateMontageRequest,
+  RegenerateMontageRequest,
+  PublishMontageRequest,
+  ReplaceMontageRequest,
+  MontageResponse,
+  MontageGeneratingResponse,
+  MontageOptionsResponse,
+  DownloadUrlResponse,
+} from "@twenty4/contracts/dto";
+
 /** Wire shape of GET /groups/:id/members (array of member rows). */
 export interface GroupMembersResponse {
   items: GroupMemberResponse[];
@@ -286,29 +298,37 @@ export function createApiClient(options: ApiClientOptions) {
 
     // --- montage --------------------------------------------------------------
     montage: {
-      // TODO(slice 5): montage create/poll/publish DTOs.
-      // POST /montages → enqueue render; poll status (§7.3) drives 2.4.
-      create: (input: unknown) => request<unknown>("/montages", { method: "POST", body: input }),
-      get: (id: string) => request<unknown>(`/montages/${id}`),
-      // Theme/music tweak + regenerate (2.6 / 2.7).
-      regenerate: (id: string, input: unknown) =>
-        request<unknown>(`/montages/${id}/regenerate`, { method: "POST", body: input }),
-      // Idempotent multi-group publish (2.8). Pass idempotencyKey.
-      publish: (id: string, input: unknown, idempotencyKey?: string) =>
-        request<unknown>(`/montages/${id}/publish`, {
+      // POST /montages → enqueue render; returns { montageId, status:'generating' }.
+      // Poll `get(id)` (§7.3) until status === 'draft_ready' to drive 2.4 → 2.5.
+      create: (input: GenerateMontageRequest) =>
+        request<MontageGeneratingResponse>("/montages", { method: "POST", body: input }),
+      // Owner-only status poll + montage view (presigned video/thumbnail when ready).
+      get: (id: string) => request<MontageResponse>(`/montages/${id}`),
+      // Available themes + music tracks for the 2.6 / 2.7 pickers.
+      options: () => request<MontageOptionsResponse>("/montages/options"),
+      // Theme/music tweak + regenerate (2.6 / 2.7); only while draft_ready/failed.
+      regenerate: (id: string, input: RegenerateMontageRequest) =>
+        request<MontageGeneratingResponse>(`/montages/${id}/regenerate`, {
+          method: "POST",
+          body: input,
+        }),
+      // Idempotent multi-group publish (2.8). Pass idempotencyKey for explicit dedupe;
+      // a re-publish to the SAME groups is a natural no-op even without one.
+      publish: (id: string, input: PublishMontageRequest, idempotencyKey?: string) =>
+        request<MontageResponse>(`/montages/${id}/publish`, {
           method: "POST",
           body: input,
           idempotencyKey,
         }),
-      // Replace prior montage (§5 Q2). Idempotency-guarded.
-      replace: (id: string, input: unknown, idempotencyKey?: string) =>
-        request<unknown>(`/montages/${id}/replace`, {
+      // Replace prior montage (§5 Q2): publish the replacement + supersede the prior.
+      replace: (id: string, input: ReplaceMontageRequest, idempotencyKey?: string) =>
+        request<MontageResponse>(`/montages/${id}/replace`, {
           method: "POST",
           body: input,
           idempotencyKey,
         }),
       // Owner-only signed download URL (§11.10 / Q7).
-      downloadUrl: (id: string) => request<unknown>(`/montages/${id}/download-url`),
+      downloadUrl: (id: string) => request<DownloadUrlResponse>(`/montages/${id}/download-url`),
     },
 
     // --- feed -----------------------------------------------------------------

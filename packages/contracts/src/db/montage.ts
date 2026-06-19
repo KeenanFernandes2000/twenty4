@@ -32,6 +32,16 @@ export const montages = pgTable(
     renderJobId: text('render_job_id'),
     /** The EDL the intelligence emitted & the renderer consumed (jsonb). */
     edl: jsonb('edl').$type<Edl>(),
+    /**
+     * Replace flow (§6 Q2): when a replacement montage is PUBLISHED, the prior
+     * montage is marked `superseded` — its `supersededBy` points at the new id and
+     * its status moves to a terminal `deleted_by_user`. Full cascade delete of the
+     * old render + its social is Slice 7 (here we mark/supersede + enqueue cleanup).
+     * Nullable; only set on a montage that has been replaced.
+     */
+    supersededBy: uuid('superseded_by'),
+    /** Non-fatal render failure detail (non-PII) for the §7.4 failed state / admin. */
+    renderError: text('render_error'),
     createdAt: createdAt(),
     publishedAt: tsTz('published_at'),
     /** = published_at + 24h. */

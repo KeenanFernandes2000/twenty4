@@ -24,6 +24,7 @@ import { useTheme } from '../../../theme';
 import { Button, CountdownBadge, EmptyState, ErrorRetry, Icon, Skeleton } from '../../../ui';
 import { MediaTile } from '../../../components/MediaTile';
 import { useDeleteMedia, useTodayMedia, mediaErrorMessage } from '../../../lib/media';
+import { useGenerate, montageErrorMessage } from '../../../lib/montage';
 import { nextDayClose } from '../../../lib/dayClose';
 import { mockMode, mockToday } from '../../../lib/mediaMocks';
 import { useUploadStore, selectActiveCount } from '../../../stores/uploadStore';
@@ -44,6 +45,7 @@ export default function Today() {
 
   const query = useTodayMedia({ enabled: !useMock });
   const deleteMedia = useDeleteMedia();
+  const generate = useGenerate();
 
   const activeUploads = useUploadStore(selectActiveCount);
   const uploadOrder = useUploadStore((s) => s.order);
@@ -77,6 +79,27 @@ export default function Today() {
 
   const items = data?.items ?? [];
   const validCount = data?.validCount ?? 0;
+  // Client-side hint for the CTA; the server is authoritative on the real gate.
+  const canCreate = validCount >= 1;
+
+  const onCreate = () => {
+    const validIds = items.filter((it) => it.validationStatus === 'valid').map((it) => it.id);
+    if (validIds.length === 0) return;
+    generate.mutate(
+      { mediaIds: validIds, theme: 'Random', musicId: 'golden-hour' },
+      {
+        onSuccess: (res) =>
+          router.push({
+            pathname: '/(main)/today/generating',
+            params: { id: res.montageId, clips: String(validIds.length) },
+          }),
+        onError: (err) => {
+          if (Platform.OS === 'web') return;
+          Alert.alert('Couldn’t start your montage', montageErrorMessage(err));
+        },
+      },
+    );
+  };
 
   return (
     <ScrollView
@@ -146,6 +169,18 @@ export default function Today() {
           <Button label="Add from library" icon="images" variant="secondary" onPress={onAdd} fullWidth />
         </View>
       </View>
+
+      {/* Create montage CTA — gated on having valid items today. */}
+      {canCreate ? (
+        <Button
+          label={generate.isPending ? 'Starting…' : 'Create montage'}
+          icon="sparkles"
+          size="lg"
+          fullWidth
+          loading={generate.isPending}
+          onPress={onCreate}
+        />
+      ) : null}
 
       {/* Body */}
       {isLoading ? (

@@ -31,6 +31,24 @@ export default function TodayLayout() {
         name="upload-progress"
         options={{ title: 'Uploads', presentation: 'modal' }}
       />
+
+      {/* Montage flow (Slice 5): generate → review → publish. */}
+      <Stack.Screen
+        name="generating"
+        options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }}
+      />
+      <Stack.Screen name="review" options={{ title: 'Review' }} />
+      <Stack.Screen name="theme" options={{ title: 'Pick a vibe' }} />
+      <Stack.Screen name="music" options={{ title: 'Add music' }} />
+      <Stack.Screen name="publish" options={{ title: 'Share to' }} />
+      <Stack.Screen
+        name="published"
+        options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }}
+      />
+      <Stack.Screen
+        name="render-failed"
+        options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }}
+      />
     </Stack>
   );
 }

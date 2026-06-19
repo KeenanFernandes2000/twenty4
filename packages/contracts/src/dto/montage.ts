@@ -87,3 +87,33 @@ export const downloadUrlResponseSchema = z
   })
   .strict();
 export type DownloadUrlResponse = z.infer<typeof downloadUrlResponseSchema>;
+
+/**
+ * GET /montages/options — available themes + music tracks for the review screens
+ * (2.6 theme picker / 2.7 music picker). Themes come from the enum; music tracks
+ * (id/label/bpm) come from the bundled music registry. The client renders these
+ * choices and sends a `theme` + `musicId` back on generate/regenerate.
+ */
+export const musicTrackOptionSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    bpm: z.number().int().positive(),
+    /** True = synthesized placeholder (§13 music source TBD); UI may hint this. */
+    synthesized: z.boolean().optional(),
+  })
+  .strict();
+export type MusicTrackOption = z.infer<typeof musicTrackOptionSchema>;
+
+export const montageOptionsResponseSchema = z
+  .object({
+    /** Selectable theme names (includes `Random`). */
+    themes: z.array(themeSchema),
+    /** Default theme when the client doesn't pick one. */
+    defaultTheme: themeSchema,
+    music: z.array(musicTrackOptionSchema),
+    /** Default music id when the client doesn't pick one. */
+    defaultMusicId: z.string().min(1),
+  })
+  .strict();
+export type MontageOptionsResponse = z.infer<typeof montageOptionsResponseSchema>;

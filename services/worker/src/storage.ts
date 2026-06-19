@@ -3,12 +3,15 @@
  * rendering. Read-only side of the bucket map (the API mints keys + presigns).
  */
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
   S3Client,
   type GetObjectCommandOutput,
 } from '@aws-sdk/client-s3';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { env } from './env.js';
@@ -122,6 +125,42 @@ export async function downloadObjectBuffer(
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * Upload a local file to `bucket/key` (used by the render job to push the rendered
+ * MP4 → montages bucket and the thumbnail → thumbnails bucket). The key is minted
+ * server-side by the worker (namespaced to the user) so it can't collide or escape.
+ * Streams the file with its size so S3/MinIO gets a correct Content-Length.
+ */
+export async function uploadObject(
+  bucket: string,
+  key: string,
+  filePath: string,
+  contentType: string,
+): Promise<void> {
+  const { size } = await stat(filePath);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: createReadStream(filePath),
+      ContentLength: size,
+      ContentType: contentType,
+    }),
+  );
+}
+
+/**
+ * Delete an object (best-effort, idempotent). Used on §7.4 render failure to clean
+ * up any partial outputs already uploaded — no orphaned objects.
+ */
+export async function deleteObject(bucket: string, key: string): Promise<void> {
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  } catch {
+    /* already gone / best-effort */
+  }
 }
 
 export function closeStorage(): void {

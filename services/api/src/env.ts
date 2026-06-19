@@ -62,6 +62,17 @@ const envSchema = z.object({
     .positive()
     .default(200 * 1024 * 1024),
 
+  // Minimum number of VALID daily_media_item rows required in today's bucket
+  // before a montage can be generated (configurable). Default 1 (the loop is
+  // demoable with a single item; a higher floor is a product knob).
+  MONTAGE_MIN_VALID_MEDIA: z.coerce.number().int().min(1).default(1),
+
+  // Montage content lifetime once published (§6: 24h). Configurable for tests.
+  MONTAGE_LIFETIME_HOURS: z.coerce.number().int().positive().default(24),
+
+  // Grace period before the raw-media purge runs after publish (§6 Q5: +60min).
+  RAW_PURGE_GRACE_MINUTES: z.coerce.number().int().min(0).default(60),
+
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 

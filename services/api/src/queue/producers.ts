@@ -49,6 +49,39 @@ export interface ValidateMediaJob {
   serverReceiveTime: string;
 }
 
+/* ---------------------------- montage queue ------------------------------- */
+
+/** Queue + job names for the render pipeline + §6 montage-lifecycle jobs. */
+export const MONTAGE_QUEUE = 'montage';
+export const RENDER_MONTAGE_JOB = 'render-montage';
+export const EXPIRE_MONTAGE_JOB = 'expire-montage';
+export const CLEANUP_RAW_JOB = 'cleanup-raw';
+
+/**
+ * Payload for the `render-montage` job. Only the montage id is needed — the worker
+ * re-reads the canonical row + the user's VALID media for the day_bucket, so it's
+ * self-contained and can't act on stale client-passed values (theme/music live on
+ * the row, set by the API at generate/regenerate time).
+ */
+export interface RenderMontageJob {
+  montageId: string;
+}
+
+/** Payload for the delayed `expire-montage` job (§6 24h expiry — consumer Slice 7). */
+export interface ExpireMontageJob {
+  montageId: string;
+  /** ISO of the scheduled expiry (= published_at + 24h). */
+  expiryAt: string;
+}
+
+/** Payload for the delayed `cleanup-raw` job (§6 Q5 — raw purge, consumer Slice 7). */
+export interface CleanupRawJob {
+  userId: string;
+  dayBucket: string;
+  /** The montage whose publish triggered the purge (audit context). */
+  montageId: string;
+}
+
 let _accountQueue: Queue<PurgeAccountJob> | null = null;
 
 /** Lazily construct the account queue (avoids a Redis connection at import time). */
@@ -102,6 +135,82 @@ export async function enqueueValidateMedia(payload: ValidateMediaJob): Promise<v
   });
 }
 
+/* --------------------------- montage producers ----------------------------- */
+
+let _montageQueue: Queue | null = null;
+
+/** Lazily construct the montage queue (render + lifecycle jobs share one queue). */
+function montageQueue(): Queue {
+  if (!_montageQueue) {
+    _montageQueue = new Queue(MONTAGE_QUEUE, { connection: redisConnection() });
+  }
+  return _montageQueue;
+}
+
+/**
+ * Enqueue a `render-montage` job (called by POST /montages + regenerate/replace).
+ * The worker loads the row + the user's VALID media, builds the EDL, renders the
+ * MP4 + thumbnail, uploads them, and flips status → draft_ready (or failed).
+ *
+ * §7.4: `attempts:2` (one retry); on final failure the worker marks the row failed
+ * and cleans up any partial S3 (no orphans). A 5-min hard timeout is enforced by
+ * the renderer itself; we also cap job lifetime generously here.
+ */
+export async function enqueueRenderMontage(
+  payload: RenderMontageJob,
+): Promise<string> {
+  const job = await montageQueue().add(RENDER_MONTAGE_JOB, payload, {
+    removeOnComplete: true,
+    removeOnFail: 100,
+    attempts: 2,
+    backoff: { type: 'fixed', delay: 2000 },
+  });
+  return job.id!;
+}
+
+/**
+ * Enqueue the DELAYED `expire-montage` job at +24h (§6). The CONSUMER is Slice 7
+ * (deletion lifecycle); here we only schedule it so the delayed job already exists
+ * when the consumer is wired. A repeatable sweep (belt-and-suspenders) is also
+ * Slice 7. // TODO(slice 7): consume `expire-montage` → delete video/thumb + row +
+ * cascade reactions/comments + audit tombstone.
+ */
+export async function enqueueExpireMontage(
+  payload: ExpireMontageJob,
+  delayMs: number,
+): Promise<void> {
+  await montageQueue().add(EXPIRE_MONTAGE_JOB, payload, {
+    // Deterministic jobId so re-publish/replay can't double-schedule the same
+    // expiry. NOTE: BullMQ custom jobIds may NOT contain ':' — use '-' separators.
+    jobId: `expire-${payload.montageId}`,
+    delay: Math.max(0, delayMs),
+    removeOnComplete: true,
+    removeOnFail: 100,
+    attempts: 5,
+    backoff: { type: 'exponential', delay: 5000 },
+  });
+}
+
+/**
+ * Schedule the delayed `cleanup-raw` job at +60min (§6 Q5 — raw purge after
+ * publish). CONSUMER is Slice 7. // TODO(slice 7): consume `cleanup-raw` →
+ * hard-delete ALL raw (used + unused) + draft renders for (user, day_bucket).
+ */
+export async function enqueueCleanupRaw(
+  payload: CleanupRawJob,
+  delayMs: number,
+): Promise<void> {
+  await montageQueue().add(CLEANUP_RAW_JOB, payload, {
+    // BullMQ custom jobIds may NOT contain ':' — use '-' separators.
+    jobId: `cleanup-raw-${payload.userId}-${payload.dayBucket}`,
+    delay: Math.max(0, delayMs),
+    removeOnComplete: true,
+    removeOnFail: 100,
+    attempts: 5,
+    backoff: { type: 'exponential', delay: 10000 },
+  });
+}
+
 /** Close the queue connection (graceful shutdown). */
 export async function closeQueues(): Promise<void> {
   if (_accountQueue) {
@@ -111,5 +220,9 @@ export async function closeQueues(): Promise<void> {
   if (_mediaQueue) {
     await _mediaQueue.close();
     _mediaQueue = null;
+  }
+  if (_montageQueue) {
+    await _montageQueue.close();
+    _montageQueue = null;
   }
 }

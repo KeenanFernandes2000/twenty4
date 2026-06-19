@@ -77,10 +77,11 @@ export function useMe() {
 /* --------------------------------- queries --------------------------------- */
 
 /** 4.1 — the caller's active groups (member count + role per group). */
-export function useGroups() {
+export function useGroups(options?: { enabled?: boolean }) {
   return useQuery<GroupListResponse>({
     queryKey: groupKeys.list(),
     queryFn: () => apiClient.groups.list(),
+    enabled: options?.enabled ?? true,
   });
 }
 

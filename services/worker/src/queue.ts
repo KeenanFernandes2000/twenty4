@@ -13,3 +13,15 @@ export interface ValidateMediaJob {
   mediaId: string;
   serverReceiveTime: string;
 }
+
+/* ---------------------------- montage queue ------------------------------- */
+
+export const MONTAGE_QUEUE = 'montage';
+export const RENDER_MONTAGE_JOB = 'render-montage';
+export const EXPIRE_MONTAGE_JOB = 'expire-montage';
+export const CLEANUP_RAW_JOB = 'cleanup-raw';
+
+/** Payload for the `render-montage` job (see producers.ts RenderMontageJob). */
+export interface RenderMontageJob {
+  montageId: string;
+}
