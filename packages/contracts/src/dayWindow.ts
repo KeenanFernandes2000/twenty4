@@ -155,3 +155,72 @@ export function isInDayBucket(
 ): boolean {
   return resolveDayBucket(atUtc, deviceTz, offsetHours) === bucket;
 }
+
+/** A tz-LESS wall clock (e.g. EXIF DateTimeOriginal `YYYY:MM:DD HH:MM:SS`). */
+export interface WallClockFields {
+  year: number;
+  month: number; // 1-12
+  day: number; // 1-31
+  hour: number; // 0-23
+  minute: number;
+  second: number;
+}
+
+/**
+ * Convert a tz-LESS wall clock to a UTC `Date`, interpreting it as local time in
+ * `timeZone` (DST-correct, via Intl) — NOT in the server process tz.
+ *
+ * ## Why this exists
+ * EXIF `DateTimeOriginal` (and many container `creation_time`s) are tz-less wall
+ * clocks: "14:30:00" with no offset. A naive `new Date("2026-06-19T14:30:00")`
+ * (or exifr's auto-revived Date) interprets that string in the SERVER process tz,
+ * so the resulting UTC instant — and therefore the resolved day bucket — would
+ * SHIFT with the server's `TZ`. That makes the "is this today?" verdict
+ * non-deterministic across deploys. We instead anchor the wall clock to the
+ * capturing device's tz, which is stable and correct.
+ *
+ * ## Algorithm
+ * There's no built-in "wall clock in zone → UTC". We invert `wallClockInZone`:
+ *   1. Guess the instant as if the wall clock were UTC.
+ *   2. See what wall clock that guess actually reads as in `timeZone`.
+ *   3. The difference between (1) and (2) is the zone's offset at that instant;
+ *      subtract it to land on the true UTC instant.
+ *   4. One refinement pass handles DST boundaries (the offset can change between
+ *      the guess and the corrected instant).
+ *
+ * Invalid zones throw (Intl `RangeError`) — callers should validate / fall back.
+ */
+export function zonedWallClockToUtc(
+  wall: WallClockFields,
+  timeZone: string,
+): Date {
+  // ms since epoch if the wall clock were literally UTC.
+  const asUtcMs = Date.UTC(
+    wall.year,
+    wall.month - 1,
+    wall.day,
+    wall.hour,
+    wall.minute,
+    wall.second,
+  );
+
+  // The offset of `timeZone` at a given instant = (wall clock there) − (that
+  // instant as UTC). Compute it, then correct, then re-check once for DST edges.
+  const offsetAt = (instantMs: number): number => {
+    const w = wallClockInZone(new Date(instantMs), timeZone);
+    const wallAsUtcMs = Date.UTC(
+      w.year,
+      w.month - 1,
+      w.day,
+      w.hour,
+      w.minute,
+      w.second,
+    );
+    return wallAsUtcMs - instantMs;
+  };
+
+  let utcMs = asUtcMs - offsetAt(asUtcMs);
+  // Refine once: the offset at the corrected instant may differ across a DST jump.
+  utcMs = asUtcMs - offsetAt(utcMs);
+  return new Date(utcMs);
+}

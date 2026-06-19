@@ -31,6 +31,7 @@ import {
   mediaDownloadUrlResponseSchema,
   todayMediaResponseSchema,
   MAX_DAILY_ITEMS,
+  MAX_ITEM_BYTES,
   MAX_VIDEO_MS,
   type MediaItemResponse,
 } from '@twenty4/contracts/dto';
@@ -43,6 +44,8 @@ import { env } from '../../env.js';
 import { throttleMediaInit } from '../../lib/rateLimit.js';
 import {
   buckets,
+  deleteObject,
+  objectHead,
   presignGet,
   presignPut,
   rawObjectKey,
@@ -59,6 +62,15 @@ const RAW_LIFETIME_HOURS = 25;
 
 /** Default day bucket tz when a client omits it: UTC (server-authoritative). */
 const DEFAULT_TZ = 'UTC';
+
+/**
+ * Post-upload size cap (§10, ≤200MB/item). A presigned PUT can't enforce size
+ * up-front, so POST /media/:id/complete HeadObjects the landed object and rejects
+ * (+ deletes it) if it's over this cap or the content-type doesn't match. The
+ * effective cap is `min(env override, §10 hard limit)` so the env can only ever
+ * TIGHTEN the limit, never loosen it past the §10 ceiling.
+ */
+const MAX_UPLOAD_BYTES = Math.min(env.MAX_UPLOAD_BYTES, MAX_ITEM_BYTES);
 
 /** Project a row into the owner-facing DTO (optionally with a preview URL). */
 function toItemResponse(
@@ -104,6 +116,16 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
     if (body.mediaType === 'video' && body.durationMs && body.durationMs > MAX_VIDEO_MS) {
       throw errors.payloadTooLarge('video exceeds the 60s limit', {
         maxVideoMs: MAX_VIDEO_MS,
+      });
+    }
+
+    // Anti-tamper: a non-capture (gallery) upload MUST carry a device_timestamp so
+    // the worker can compute the device-clock-vs-server delta. Making it optional
+    // let a client trivially disable the anti-tamper check by omitting it; require
+    // it here (in-app captures are exempt — the trusted camera path supplies it).
+    if (!body.capturedInApp && !body.deviceTimestamp) {
+      throw errors.validation('device_timestamp is required for gallery uploads', {
+        field: 'deviceTimestamp',
       });
     }
 
@@ -184,6 +206,51 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
     const me = req.user!;
 
     const row = await loadOwnedOr404(id, me.id);
+
+    // Post-upload gate: HeadObject the landed raw object. A presigned PUT can't
+    // enforce size/content-type up-front, so we verify here. On a violation we
+    // DELETE the object and mark the row failed (§10 size/type caps).
+    const head = await objectHead(buckets.raw, row.storagePath);
+    if (!head) {
+      // The PUT never landed — nothing to validate. (Object absent.)
+      await db
+        .update(dailyMediaItems)
+        .set({ processingStatus: 'failed', validationStatus: 'invalid' })
+        .where(eq(dailyMediaItems.id, row.id));
+      throw errors.validation('upload not found; PUT the object before completing', {
+        field: 'storageKey',
+      });
+    }
+
+    const overCap =
+      head.sizeBytes !== null && head.sizeBytes > MAX_UPLOAD_BYTES;
+    // Content-type mismatch: what actually landed vs what was declared at init.
+    // MinIO/S3 records the PUT's Content-Type; if the client lied (or PUT a
+    // different type), reject. (Null/absent recorded type is tolerated — some S3
+    // setups omit it — but a present mismatch is rejected.)
+    const typeMismatch =
+      !!head.contentType &&
+      !!row.contentType &&
+      head.contentType.split(';')[0]!.trim().toLowerCase() !==
+        row.contentType.toLowerCase();
+
+    if (overCap || typeMismatch) {
+      await deleteObject(buckets.raw, row.storagePath);
+      await db
+        .update(dailyMediaItems)
+        .set({ processingStatus: 'failed', validationStatus: 'invalid' })
+        .where(eq(dailyMediaItems.id, row.id));
+      throw errors.payloadTooLarge(
+        overCap ? 'upload exceeds the size limit' : 'upload content-type mismatch',
+        {
+          maxBytes: MAX_UPLOAD_BYTES,
+          ...(head.sizeBytes !== null ? { sizeBytes: head.sizeBytes } : {}),
+          ...(typeMismatch
+            ? { declared: row.contentType, actual: head.contentType }
+            : {}),
+        },
+      );
+    }
 
     // Move to 'validating' so the Today screen can show a spinner; the worker
     // sets the terminal validation/processing state.
@@ -273,15 +340,16 @@ export const mediaModule: FastifyPluginAsync = async (app) => {
   });
 
   /* ----------------------------- DELETE /media/:id ------------------------- */
-  // Owner removes an item → hard-delete the row + best-effort S3 cleanup (§6
-  // "user removes item → hard-delete row + S3 object immediately"). We delete the
-  // row authoritatively; the S3 object is removed by the cleanup path (Slice 7
-  // owns S3 deletes) — here we mark it deleted so it's excluded everywhere and a
-  // download-url 404s. (Hard row delete keeps no tombstone for raw media.)
+  // Owner removes an item → hard-delete the row AND the S3 object (§6 "user removes
+  // item → hard-delete row + S3 object immediately"). Deleting the bytes is what
+  // makes a previously-issued presigned GET 404 with the CONTENT, not just hide the
+  // row — a leaked GET must not outlive the delete. We remove the object FIRST
+  // (best-effort; DELETE is idempotent on S3) then drop the row.
   app.delete('/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const me = req.user!;
     const row = await loadOwnedOr404(id, me.id);
+    await deleteObject(buckets.raw, row.storagePath);
     await db.delete(dailyMediaItems).where(eq(dailyMediaItems.id, row.id));
     reply.code(204).send();
   });

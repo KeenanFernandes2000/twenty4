@@ -9,7 +9,11 @@
  * `utc - 4h` offset (which would be WRONG across a transition).
  */
 import { describe, it, expect } from 'vitest';
-import { resolveDayBucket, isInDayBucket } from '../src/dayWindow.js';
+import {
+  resolveDayBucket,
+  isInDayBucket,
+  zonedWallClockToUtc,
+} from '../src/dayWindow.js';
 
 describe('resolveDayBucket — §6 Q3 4am→4am day window', () => {
   /* -------------------------------------------------------------------------- */
@@ -191,5 +195,64 @@ describe('resolveDayBucket — §6 Q3 4am→4am day window', () => {
 
   it('throws on an invalid date', () => {
     expect(() => resolveDayBucket(new Date('nope'), 'UTC')).toThrow();
+  });
+});
+
+describe('zonedWallClockToUtc — tz-less wall clock interpreted in a device tz', () => {
+  const wall = { year: 2026, month: 6, day: 19, hour: 14, minute: 30, second: 0 };
+
+  it('interprets a tz-less wall clock as local time in the given zone', () => {
+    // 14:30 in UTC → 14:30Z.
+    expect(zonedWallClockToUtc(wall, 'UTC').toISOString()).toBe(
+      '2026-06-19T14:30:00.000Z',
+    );
+    // 14:30 in New York (EDT, -4 in June) → 18:30Z.
+    expect(zonedWallClockToUtc(wall, 'America/New_York').toISOString()).toBe(
+      '2026-06-19T18:30:00.000Z',
+    );
+    // 14:30 in Kolkata (+5:30, no DST) → 09:00Z.
+    expect(zonedWallClockToUtc(wall, 'Asia/Kolkata').toISOString()).toBe(
+      '2026-06-19T09:00:00.000Z',
+    );
+  });
+
+  it('is DETERMINISTIC regardless of the server process TZ', () => {
+    // The whole point of the EXIF tz fix: the result depends ONLY on the device
+    // tz arg, never on the worker's process.env.TZ.
+    const original = process.env.TZ;
+    try {
+      const results = ['UTC', 'America/New_York', 'Asia/Kolkata'].map((serverTz) => {
+        process.env.TZ = serverTz;
+        return zonedWallClockToUtc(wall, 'America/New_York').toISOString();
+      });
+      expect(new Set(results).size).toBe(1);
+      expect(results[0]).toBe('2026-06-19T18:30:00.000Z');
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
+  it('is DST-correct (winter EST vs summer EDT offsets differ)', () => {
+    // 14:00 NY in January = EST (-5) → 19:00Z.
+    expect(
+      zonedWallClockToUtc(
+        { year: 2026, month: 1, day: 15, hour: 14, minute: 0, second: 0 },
+        'America/New_York',
+      ).toISOString(),
+    ).toBe('2026-01-15T19:00:00.000Z');
+    // 14:00 NY in July = EDT (-4) → 18:00Z.
+    expect(
+      zonedWallClockToUtc(
+        { year: 2026, month: 7, day: 15, hour: 14, minute: 0, second: 0 },
+        'America/New_York',
+      ).toISOString(),
+    ).toBe('2026-07-15T18:00:00.000Z');
+  });
+
+  it('round-trips with resolveDayBucket in the same zone', () => {
+    // A wall clock + its zone, bucketed, equals bucketing the resolved instant.
+    const utc = zonedWallClockToUtc(wall, 'America/New_York');
+    expect(resolveDayBucket(utc, 'America/New_York')).toBe('2026-06-19');
   });
 });

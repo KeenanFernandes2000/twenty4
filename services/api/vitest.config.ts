@@ -19,6 +19,10 @@ export default defineConfig({
       S3_ACCESS_KEY: process.env.S3_ACCESS_KEY ?? 'minioadmin',
       S3_SECRET_KEY: process.env.S3_SECRET_KEY ?? 'minioadmin',
       S3_FORCE_PATH_STYLE: 'true',
+      // Tighten the post-upload size cap to 1KB so the oversize gate can be
+      // exercised on REAL small bytes (a ~2KB upload trips it) without moving
+      // 200MB. The route clamps to min(env, §10 200MB), so this only tightens.
+      MAX_UPLOAD_BYTES: '1024',
       S3_BUCKET_RAW: 'raw',
       S3_BUCKET_MONTAGES: 'montages',
       S3_BUCKET_THUMBNAILS: 'thumbnails',

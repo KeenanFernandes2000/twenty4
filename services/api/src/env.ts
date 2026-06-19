@@ -52,6 +52,16 @@ const envSchema = z.object({
   // 4am→4am day window: floor((utc − DAY_WINDOW_OFFSET_HOURS) in device tz).
   DAY_WINDOW_OFFSET_HOURS: z.coerce.number().int().min(0).max(23).default(4),
 
+  // Post-upload size cap (bytes). The presigned PUT can't enforce size up-front, so
+  // POST /media/:id/complete HeadObjects the landed object and rejects (+ deletes)
+  // anything over this. Defaults to the §10 200MB/item limit; overridable (e.g.
+  // tests set a tiny cap to exercise the gate on real, small bytes).
+  MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(200 * 1024 * 1024),
+
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 

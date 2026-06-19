@@ -1,29 +1,76 @@
 /**
- * `validate-media` job (§6 metadata validation hierarchy, Q4) — the gate that
- * underpins the 24h-deletion promise: only media genuinely captured in TODAY's
- * 4am→4am window may live in today's bucket.
+ * `validate-media` job — the gate underpinning the "today only" / 24h-deletion
+ * promise: only media that genuinely belongs to TODAY's 4am→4am window may live in
+ * today's bucket.
  *
- * For each uploaded raw item we:
+ * ============================================================================
+ * FRESHNESS MODEL (Phase 1) — what we trust, and why
+ * ============================================================================
+ * The ONLY freshness signal a client cannot forge is the SERVER clock at upload
+ * time. The day_bucket was resolved server-side at upload from `new Date()` + the
+ * device tz, so "this row was uploaded during today's window" is the trustworthy
+ * FLOOR — every row we see here was created today by definition of being uploaded
+ * today. Everything else (EXIF, container creation_time, client timestamps) is a
+ * best-effort ANTI-BACKDATING signal layered on top of that floor.
+ *
+ * Verdict logic (in order):
  *   1. Re-read the canonical row (self-contained; never trust stale client values).
- *   2. If `captured_in_app` → AUTO-VALID (the trusted in-app camera path, §6).
- *   3. Otherwise resolve `original_timestamp` from the HIERARCHY:
- *        a. EXIF `DateTimeOriginal`            (images — via exifr)
- *        b. media-library / asset creation time (client-passed device_timestamp
- *           used as the media-lib proxy; videos: ffprobe `creation_time`)
- *        c. file creation time                  (S3 LastModified is unreliable as
- *           a *capture* time, so we treat the absence of a/b for a file with no
- *           embedded time as → invalid; see note below)
- *        d. none resolved → INVALID
- *   4. Check the resolved capture instant falls in the row's `day_bucket` (using
- *      the SAME shared resolver + the device tz). If not → INVALID.
- *   5. Anti-tamper: if |device_timestamp − server_receive_time| exceeds the
- *      threshold → set `device_time_suspicious=true` (does NOT itself invalidate;
- *      it's a review signal, §6).
- *   6. Persist `validation_status` + flags + `processing_status` + a non-PII
- *      `metadata_summary` (which source resolved, dims/codec presence).
+ *   2. Anti-tamper delta: |device_timestamp − server_receive_time|. A large delta
+ *      sets `device_time_suspicious` (a FLAG for review, never a sole verdict).
+ *   3. Resolve a RELIABLE embedded capture time, if one exists:
+ *        - images: EXIF `DateTimeOriginal` (via exifr), interpreted in the device
+ *          tz (see TZ note below);
+ *        - videos: container `creation_time` (via ffprobe).
+ *      If present, it MUST fall in the row's day_bucket → else INVALID
+ *      (out_of_window). This is what catches OLD gallery files: a photo shot last
+ *      week carries last week's EXIF and is rejected regardless of any client flag.
+ *   4. If NO embedded capture time exists:
+ *        - captured_in_app=true  → VALID, flagged `capture_time_unverified=true`.
+ *          Trusted ONLY because the upload itself is fresh (server clock floor);
+ *          the in-app camera path means there was no pre-existing gallery file.
+ *        - captured_in_app=false → INVALID (no_capture_time). A gallery pick with
+ *          no embedded time cannot be confirmed fresh; we take the STRICTER option
+ *          (reject) rather than trust an unverifiable upload. See SECURITY note.
+ *   5. A client-passed `original_timestamp` is DEMOTED: it may RAISE SUSPICION (if
+ *      it's old → out_of_window/flag) but it can NEVER by itself make an item VALID.
+ *      Embedded EXIF/container metadata is always preferred over any client time.
  *
- * On ANY unexpected error we mark the item invalid/failed and RETURN normally —
- * the worker must never crash on a single bad item (§10 "failed jobs retry").
+ * `captured_in_app` is NO LONGER a blanket bypass: an in-app photo that somehow
+ * carries OLD embedded EXIF is still rejected (step 3 runs first). The old code
+ * auto-VALIDed any `captured_in_app=true` upload — a client-trusted boolean — which
+ * let a forged gallery pick sail through. That bypass is removed.
+ *
+ * ============================================================================
+ * EXIF TZ NOTE (HIGH) — deterministic regardless of server TZ
+ * ============================================================================
+ * EXIF `DateTimeOriginal` is a tz-LESS wall clock ("14:30:00", no offset). exifr's
+ * auto-revived Date (and a naive `new Date(str)`) interpret it in the SERVER
+ * process tz, so the derived UTC instant — and the day bucket — would SHIFT with
+ * the deploy's `TZ`. We instead read the RAW string (`reviveValues:false`) and
+ * interpret the wall clock in the ITEM's device tz via `zonedWallClockToUtc`
+ * (DST-correct). If the camera wrote a real `OffsetTimeOriginal`, we honor it.
+ * Result: the same EXIF validates identically no matter what TZ the worker runs in
+ * (covered by a tz-consistency regression test that sets process.env.TZ).
+ *
+ * ============================================================================
+ * SECURITY — ACCEPTED Phase-1 LIMITATION (tracked for Phase 2)
+ * ============================================================================
+ * Without CAPTURE ATTESTATION, freshness is not cryptographically provable. A
+ * determined user can still forge it: a rooted device can feed the in-app camera
+ * path fake frames, or strip/rewrite EXIF on a gallery file before upload. Our
+ * defenses (server-clock floor, embedded-metadata anti-backdating, device-clock
+ * delta) raise the cost and catch casual abuse (the common "share an old gallery
+ * photo" case), but they are NOT a substitute for attestation.
+ *
+ * Full freshness needs a capture-attestation chain — Play Integrity / App Attest
+ * or server-issued capture-session tokens binding the bytes to a live in-app
+ * capture — which is OUT OF SCOPE for Phase 1 and tracked for Phase 2. We do NOT
+ * fake it: items relying solely on the in-app path (no embedded time) are clearly
+ * flagged `capture_time_unverified=true` so downstream consumers know freshness
+ * was asserted, not proven.
+ *
+ * On ANY unexpected error we mark the item invalid/failed and RETURN normally — the
+ * worker must never crash on a single bad item (§10 "failed jobs retry").
  */
 import { eq } from 'drizzle-orm';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -31,7 +78,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import exifr from 'exifr';
 import { dailyMediaItems } from '@twenty4/contracts/db';
-import { resolveDayBucket } from '@twenty4/contracts/dayWindow';
+import {
+  resolveDayBucket,
+  zonedWallClockToUtc,
+  type WallClockFields,
+} from '@twenty4/contracts/dayWindow';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import { buckets, downloadObject } from '../storage.js';
@@ -39,20 +90,119 @@ import { FFPROBE_PATH } from '../media/probe.js';
 import { execa } from 'execa';
 
 /** What resolved the capture time (recorded in metadata_summary, non-PII). */
-type TimeSource = 'exif' | 'media_library' | 'video_creation_time' | 'file' | 'none';
+type TimeSource = 'exif' | 'video_creation_time' | 'none';
+
+/** Why a verdict was reached (for logs/tests; never user content). */
+type Reason =
+  | 'row_missing'
+  | 'out_of_window'
+  | 'no_capture_time'
+  | 'capture_time_unverified'
+  | 'processing_error';
 
 export interface ValidateMediaResult {
   mediaId: string;
   validationStatus: 'valid' | 'invalid';
   timeSource: TimeSource;
   deviceTimeSuspicious: boolean;
-  /** Present when invalid → the reason (for logs/tests; never user content). */
-  reason?: string;
+  /**
+   * True when the item is VALID only on the strength of the fresh-upload floor +
+   * in-app capture, with NO embedded capture time to confirm it (Phase-1 trust,
+   * not proof). Surfaced in metadata_summary for downstream consumers.
+   */
+  captureTimeUnverified: boolean;
+  /** Present on invalid OR when valid-but-unverified — the reason (non-PII). */
+  reason?: Reason;
+}
+
+/** EXIF `YYYY:MM:DD HH:MM:SS` → wall-clock fields, or null if unparseable. */
+function parseExifWallClock(raw: string): WallClockFields | null {
+  // EXIF DateTimeOriginal canonical form: "2026:06:19 14:30:00".
+  const m =
+    /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw.trim());
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  const fields: WallClockFields = {
+    year: Number(y),
+    month: Number(mo),
+    day: Number(d),
+    hour: Number(h),
+    minute: Number(mi),
+    second: Number(s),
+  };
+  if (Object.values(fields).some((n) => Number.isNaN(n))) return null;
+  return fields;
+}
+
+/** Parse an EXIF tz offset string ("+05:30" / "-08:00" / "Z") → minutes, or null. */
+function parseExifOffsetMinutes(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const t = raw.trim();
+  if (t === 'Z' || t === 'z') return 0;
+  const m = /^([+-])(\d{2}):?(\d{2})$/.exec(t);
+  if (!m) return null;
+  const [, sign, hh, mm] = m;
+  const mins = Number(hh) * 60 + Number(mm);
+  return sign === '-' ? -mins : mins;
+}
+
+/**
+ * Resolve an image's capture INSTANT from EXIF, interpreted DETERMINISTICALLY
+ * (independent of the server process tz):
+ *   - read the RAW (tz-less) `DateTimeOriginal` string via `reviveValues:false`
+ *     so exifr does NOT interpret it in the server tz;
+ *   - if the camera wrote a real `OffsetTimeOriginal`, apply that true offset;
+ *   - otherwise interpret the wall clock in the item's `deviceTz`.
+ * Returns the UTC `Date`, or null if no usable EXIF time exists.
+ */
+async function exifCaptureInstant(
+  filePath: string,
+  deviceTz: string,
+): Promise<Date | null> {
+  try {
+    const out = (await exifr.parse(filePath, {
+      // reviveValues:false → timestamps come back as their raw EXIF strings, so
+      // exifr never reinterprets the tz-less wall clock in the server tz.
+      reviveValues: false,
+      pick: ['DateTimeOriginal', 'CreateDate', 'OffsetTimeOriginal', 'OffsetTime'],
+    })) as
+      | {
+          DateTimeOriginal?: string;
+          CreateDate?: string;
+          OffsetTimeOriginal?: string;
+          OffsetTime?: string;
+        }
+      | undefined;
+
+    const rawStamp = out?.DateTimeOriginal ?? out?.CreateDate;
+    if (!rawStamp || typeof rawStamp !== 'string') return null;
+
+    const wall = parseExifWallClock(rawStamp);
+    if (!wall) return null;
+
+    // Prefer a real embedded offset; else anchor the wall clock to the device tz.
+    const offsetMin = parseExifOffsetMinutes(out?.OffsetTimeOriginal ?? out?.OffsetTime);
+    if (offsetMin !== null) {
+      const asUtcMs = Date.UTC(
+        wall.year,
+        wall.month - 1,
+        wall.day,
+        wall.hour,
+        wall.minute,
+        wall.second,
+      );
+      return new Date(asUtcMs - offsetMin * 60 * 1000);
+    }
+    return zonedWallClockToUtc(wall, deviceTz);
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Extract a video's `creation_time` (ffprobe format/stream tags) → a Date, or null.
- * Standalone ffprobe call (the renderer's `probe()` doesn't surface tags).
+ * Container `creation_time` is written as a real ISO instant (usually UTC `Z`), so
+ * unlike EXIF it is NOT tz-ambiguous — `new Date(iso)` is deterministic here.
  */
 async function videoCreationTime(filePath: string): Promise<Date | null> {
   try {
@@ -80,25 +230,9 @@ async function videoCreationTime(filePath: string): Promise<Date | null> {
   }
 }
 
-/** Extract EXIF DateTimeOriginal from an image file → a Date, or null. */
-async function exifDateTimeOriginal(filePath: string): Promise<Date | null> {
-  try {
-    // pick only the timestamp tags; exifr returns JS Dates for these.
-    const out = (await exifr.parse(filePath, {
-      pick: ['DateTimeOriginal', 'CreateDate'],
-    })) as { DateTimeOriginal?: Date; CreateDate?: Date } | undefined;
-    const d = out?.DateTimeOriginal ?? out?.CreateDate;
-    if (!d) return null;
-    const date = d instanceof Date ? d : new Date(d);
-    return Number.isNaN(date.getTime()) ? null : date;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Run the validation hierarchy for one media row id. Pure-ish: reads the row,
- * downloads the object, resolves a capture time, and WRITES the verdict back.
+ * Run the freshness model for one media row id. Reads the row, downloads the
+ * object, resolves a RELIABLE embedded capture time, and WRITES the verdict back.
  */
 export async function validateMedia(
   mediaId: string,
@@ -117,42 +251,25 @@ export async function validateMedia(
       validationStatus: 'invalid',
       timeSource: 'none',
       deviceTimeSuspicious: false,
+      captureTimeUnverified: false,
       reason: 'row_missing',
     };
   }
 
   // Anti-tamper delta (independent of the validity verdict): compare the device
-  // clock at upload against when the SERVER accepted completion.
+  // clock at upload against when the SERVER accepted completion. A missing
+  // device_timestamp is treated as SUSPICIOUS — the API requires it on non-capture
+  // uploads, so its absence on a gallery pick is itself a tamper signal.
   const thresholdMs = env.DEVICE_TIME_SUSPICIOUS_MINUTES * 60 * 1000;
   const deviceTimeSuspicious = row.deviceTimestamp
     ? Math.abs(row.deviceTimestamp.getTime() - serverReceiveTime.getTime()) >
       thresholdMs
-    : false;
+    : !row.capturedInApp; // missing clock on a gallery pick → suspicious.
 
   const deviceTz = row.deviceTimezone ?? 'UTC';
+  const rowBucket = row.dayBucket; // already a YYYY-MM-DD string (date column)
 
-  /* ---- 2: in-app capture → auto-valid (trusted path) --------------------- */
-  if (row.capturedInApp) {
-    await persist(mediaId, {
-      validationStatus: 'valid',
-      processingStatus: 'valid',
-      originalTimestamp: row.originalTimestamp ?? serverReceiveTime,
-      deviceTimeSuspicious,
-      metadata: {
-        timeSource: 'media_library',
-        capturedInApp: true,
-        deviceTimeSuspicious,
-      },
-    });
-    return {
-      mediaId,
-      validationStatus: 'valid',
-      timeSource: 'media_library',
-      deviceTimeSuspicious,
-    };
-  }
-
-  /* ---- 3: gallery upload → resolve capture time via the hierarchy -------- */
+  /* ---- resolve a RELIABLE embedded capture time (anti-backdating) -------- */
   let tmp: string | undefined;
   let captureTime: Date | null = null;
   let timeSource: TimeSource = 'none';
@@ -167,37 +284,20 @@ export async function validateMedia(
       ? true
       : row.mediaType === 'photo';
 
-    // a. EXIF DateTimeOriginal (images).
     if (isImage) {
-      captureTime = await exifDateTimeOriginal(local);
+      captureTime = await exifCaptureInstant(local, deviceTz);
       if (captureTime) timeSource = 'exif';
     } else {
-      // videos: ffprobe creation_time as the embedded capture time (≈ media-lib).
       captureTime = await videoCreationTime(local);
       if (captureTime) timeSource = 'video_creation_time';
     }
-
-    // b. media-library / asset creation time (client-passed device capture time).
-    //    Used when no embedded EXIF/container time is present. `original_timestamp`
-    //    carries the client's best-resolved capture time (EXIF→media-lib→file),
-    //    so it stands in for the device media-library creation timestamp here.
-    if (!captureTime && row.originalTimestamp) {
-      captureTime = row.originalTimestamp;
-      timeSource = 'media_library';
-    }
-
-    // c. file creation time. S3 LastModified reflects UPLOAD time, not capture
-    //    time, so it is NOT a trustworthy capture source — using it would let any
-    //    old gallery file pass simply by being uploaded today. Per §6 step 4, with
-    //    no EXIF / media-lib / embedded time we fall through to INVALID.
-    //    (A real device file-creation timestamp, when the client can read it, is
-    //    surfaced via `original_timestamp` above — handled by branch (b).)
   } catch (err) {
     // Unexpected download/parse failure → mark invalid, never crash.
     await persist(mediaId, {
       validationStatus: 'invalid',
       processingStatus: 'failed',
       deviceTimeSuspicious,
+      captureTimeUnverified: false,
       metadata: {
         timeSource: 'none',
         error: errMessage(err),
@@ -209,58 +309,139 @@ export async function validateMedia(
       validationStatus: 'invalid',
       timeSource: 'none',
       deviceTimeSuspicious,
+      captureTimeUnverified: false,
       reason: 'processing_error',
     };
   } finally {
     if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
 
-  // d. nothing resolved → invalid.
-  if (!captureTime) {
+  /* ---- a RELIABLE embedded time exists → it MUST be in today's window ----- */
+  if (captureTime) {
+    const captureBucket = resolveDayBucket(
+      captureTime,
+      deviceTz,
+      env.DAY_WINDOW_OFFSET_HOURS,
+    );
+    const inWindow = captureBucket === rowBucket;
+
     await persist(mediaId, {
-      validationStatus: 'invalid',
-      processingStatus: 'invalid',
+      validationStatus: inWindow ? 'valid' : 'invalid',
+      processingStatus: inWindow ? 'valid' : 'invalid',
+      originalTimestamp: captureTime,
       deviceTimeSuspicious,
-      metadata: { timeSource: 'none', deviceTimeSuspicious },
+      captureTimeUnverified: false,
+      metadata: {
+        timeSource,
+        capturedInApp: row.capturedInApp,
+        captureBucket,
+        rowBucket,
+        inWindow,
+        captureTimeUnverified: false,
+        deviceTimeSuspicious,
+      },
     });
+
     return {
       mediaId,
-      validationStatus: 'invalid',
-      timeSource: 'none',
+      validationStatus: inWindow ? 'valid' : 'invalid',
+      timeSource,
       deviceTimeSuspicious,
-      reason: 'no_capture_time',
+      captureTimeUnverified: false,
+      reason: inWindow ? undefined : 'out_of_window',
     };
   }
 
-  /* ---- 4: capture instant must fall in the row's day_bucket -------------- */
-  const captureBucket = resolveDayBucket(
-    captureTime,
-    deviceTz,
-    env.DAY_WINDOW_OFFSET_HOURS,
-  );
-  const rowBucket = row.dayBucket; // already a YYYY-MM-DD string (date column)
-  const inWindow = captureBucket === rowBucket;
+  /* ---- no embedded time: demote any client `original_timestamp` ----------- */
+  // A client-passed original_timestamp can RAISE SUSPICION but NEVER make an item
+  // valid on its own. If the client even claims an OLD time, that's a backdating
+  // tell → invalidate outright (it contradicts the "captured today" requirement).
+  if (row.originalTimestamp) {
+    const claimedBucket = resolveDayBucket(
+      row.originalTimestamp,
+      deviceTz,
+      env.DAY_WINDOW_OFFSET_HOURS,
+    );
+    if (claimedBucket !== rowBucket) {
+      await persist(mediaId, {
+        validationStatus: 'invalid',
+        processingStatus: 'invalid',
+        deviceTimeSuspicious,
+        captureTimeUnverified: false,
+        metadata: {
+          timeSource: 'none',
+          capturedInApp: row.capturedInApp,
+          clientClaimedBucket: claimedBucket,
+          rowBucket,
+          reason: 'client_time_out_of_window',
+          deviceTimeSuspicious,
+        },
+      });
+      return {
+        mediaId,
+        validationStatus: 'invalid',
+        timeSource: 'none',
+        deviceTimeSuspicious,
+        captureTimeUnverified: false,
+        reason: 'out_of_window',
+      };
+    }
+    // Client time is in-window: it's NOT proof of freshness (demoted), so it does
+    // not by itself validate. Fall through to the in-app / reject branches below.
+  }
 
+  /* ---- no embedded time, not backdated → trust ONLY the in-app path ------- */
+  if (row.capturedInApp) {
+    // VALID on the fresh-upload floor + in-app capture, but freshness is ASSERTED,
+    // not PROVEN — flag it loudly. (See SECURITY note: needs Phase-2 attestation.)
+    await persist(mediaId, {
+      validationStatus: 'valid',
+      processingStatus: 'valid',
+      originalTimestamp: row.originalTimestamp ?? serverReceiveTime,
+      deviceTimeSuspicious,
+      captureTimeUnverified: true,
+      metadata: {
+        timeSource: 'none',
+        capturedInApp: true,
+        captureTimeUnverified: true,
+        rowBucket,
+        deviceTimeSuspicious,
+      },
+    });
+    return {
+      mediaId,
+      validationStatus: 'valid',
+      timeSource: 'none',
+      deviceTimeSuspicious,
+      captureTimeUnverified: true,
+      reason: 'capture_time_unverified',
+    };
+  }
+
+  /* ---- gallery pick, no embedded time → cannot confirm freshness → INVALID  */
+  // STRICTER defensible option (documented): a gallery file with no embedded
+  // capture time cannot be confirmed fresh, so we reject rather than trust an
+  // unverifiable upload.
   await persist(mediaId, {
-    validationStatus: inWindow ? 'valid' : 'invalid',
-    processingStatus: inWindow ? 'valid' : 'invalid',
-    originalTimestamp: captureTime,
+    validationStatus: 'invalid',
+    processingStatus: 'invalid',
     deviceTimeSuspicious,
+    captureTimeUnverified: false,
     metadata: {
-      timeSource,
-      captureBucket,
+      timeSource: 'none',
+      capturedInApp: false,
       rowBucket,
-      inWindow,
+      reason: 'no_capture_time',
       deviceTimeSuspicious,
     },
   });
-
   return {
     mediaId,
-    validationStatus: inWindow ? 'valid' : 'invalid',
-    timeSource,
+    validationStatus: 'invalid',
+    timeSource: 'none',
     deviceTimeSuspicious,
-    reason: inWindow ? undefined : 'out_of_window',
+    captureTimeUnverified: false,
+    reason: 'no_capture_time',
   };
 }
 
@@ -272,6 +453,7 @@ async function persist(
     processingStatus: 'valid' | 'invalid' | 'failed';
     originalTimestamp?: Date;
     deviceTimeSuspicious: boolean;
+    captureTimeUnverified: boolean;
     metadata: Record<string, unknown>;
   },
 ): Promise<void> {

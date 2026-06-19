@@ -15,6 +15,9 @@
  *
  * Rows are cleaned up in afterAll (user cascade drops media).
  */
+// NOTE: this suite runs with MAX_UPLOAD_BYTES=1024 (set in vitest.config.ts) so the
+// post-upload size gate can be exercised on REAL small bytes: the 284-byte
+// TINY_JPEG passes, while a deliberately ~2KB upload trips the §10 size cap.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { eq, sql } from 'drizzle-orm';
@@ -346,15 +349,175 @@ describe('media — upload init/complete + today + download-url (live PG + redis
         contentType: 'image/jpeg',
         sizeBytes: 100,
         deviceTimezone: 'UTC',
+        // captured in-app so the device_timestamp guard is bypassed; we're testing
+        // the per-day cap here, not the anti-tamper requirement.
+        capturedInApp: true,
       },
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('conflict');
   });
 
+  /* --------------------- anti-tamper: device_timestamp gate ---------------- */
+
+  it('a gallery upload (capturedInApp=false) WITHOUT device_timestamp → 422', async () => {
+    // Anti-tamper: a non-capture upload must carry a device clock so the worker can
+    // compute the device-vs-server delta. Omitting it used to silently disable the
+    // check; now it's rejected.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/jpeg',
+        sizeBytes: 100,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        // no deviceTimestamp
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe('validation');
+  });
+
+  /* -------------------- oversize / type gate at /complete ------------------ */
+
+  it('POST /media/:id/complete rejects an OVERSIZE upload + deletes the object (413)', async () => {
+    // REAL bytes: with the suite's 1KB cap, a ~2KB JPEG is genuinely over the limit.
+    // The presigned PUT accepts it (no up-front size enforcement); the post-upload
+    // HeadObject gate then rejects it, deletes the object, and marks the row failed.
+    const big = Buffer.concat([TINY_JPEG, Buffer.alloc(2048, 0x20)]); // ~2.3KB > 1KB
+    const init = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/jpeg',
+        sizeBytes: big.length,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        deviceTimestamp: new Date().toISOString(),
+      },
+    });
+    expect(init.statusCode).toBe(201);
+    const { id, uploadUrl, storageKey } = init.json() as {
+      id: string;
+      uploadUrl: string;
+      storageKey: string;
+    };
+
+    const put = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: big,
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+    expect(put.ok).toBe(true);
+    expect(await objectExists(buckets.raw, storageKey)).toBe(true);
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(complete.statusCode).toBe(413);
+    expect(complete.json().error.code).toBe('payload_too_large');
+
+    // The reject path DELETED the object (so a leaked presigned GET would 404).
+    expect(await objectExists(buckets.raw, storageKey)).toBe(false);
+
+    // Row marked failed/invalid (not enqueued).
+    const [row] = await db
+      .select()
+      .from(dailyMediaItems)
+      .where(eq(dailyMediaItems.id, id))
+      .limit(1);
+    expect(row!.processingStatus).toBe('failed');
+    expect(row!.validationStatus).toBe('invalid');
+  });
+
+  it('POST /media/:id/complete rejects a content-type MISMATCH + deletes the object (413)', async () => {
+    // Same reject+delete path, different trigger: PUT JPEG bytes against a declared
+    // PNG slot. The under-cap size means ONLY the type mismatch trips the gate.
+    const init = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/png', // declared PNG
+        sizeBytes: TINY_JPEG.length,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        deviceTimestamp: new Date().toISOString(),
+      },
+    });
+    expect(init.statusCode).toBe(201);
+    const { id, uploadUrl, storageKey } = init.json() as {
+      id: string;
+      uploadUrl: string;
+      storageKey: string;
+    };
+
+    const put = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: TINY_JPEG,
+      headers: { 'Content-Type': 'image/jpeg' }, // mismatches declared PNG
+    });
+    expect(put.ok).toBe(true);
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(complete.statusCode).toBe(413);
+    expect(complete.json().error.code).toBe('payload_too_large');
+    expect(await objectExists(buckets.raw, storageKey)).toBe(false);
+  });
+
+  it('POST /media/:id/complete with no uploaded object → 422 (PUT never landed)', async () => {
+    const init = await app.inject({
+      method: 'POST',
+      url: '/media',
+      headers: auth(owner),
+      payload: {
+        mediaType: 'photo',
+        contentType: 'image/jpeg',
+        sizeBytes: 100,
+        capturedInApp: false,
+        deviceTimezone: 'UTC',
+        deviceTimestamp: new Date().toISOString(),
+      },
+    });
+    expect(init.statusCode).toBe(201);
+    const { id } = init.json() as { id: string };
+    // Do NOT PUT anything; complete should detect the missing object.
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/media/${id}/complete`,
+      headers: auth(owner),
+    });
+    expect(complete.statusCode).toBe(422);
+    expect(complete.json().error.code).toBe('validation');
+  });
+
   /* -------------------------------- delete --------------------------------- */
 
-  it('DELETE /media/:id hard-deletes; download-url then 404s', async () => {
+  it('DELETE /media/:id hard-deletes the row AND the S3 object (leaked GET 404s)', async () => {
+    // Capture a presigned GET BEFORE deleting — after delete the bytes are gone, so
+    // this still-unexpired URL must 404 (content, not just the row, is removed).
+    const dl = await app.inject({
+      method: 'GET',
+      url: `/media/${createdId}/download-url`,
+      headers: auth(owner),
+    });
+    expect(dl.statusCode).toBe(200);
+    const leakedGetUrl = (dl.json() as { url: string }).url;
+    // Sanity: it works right now.
+    expect((await fetch(leakedGetUrl)).ok).toBe(true);
+
     const del = await app.inject({
       method: 'DELETE',
       url: `/media/${createdId}`,
@@ -369,6 +532,12 @@ describe('media — upload init/complete + today + download-url (live PG + redis
       .limit(1);
     expect(gone).toBeUndefined();
 
+    // The S3 object is gone → the previously-issued presigned GET now 404s.
+    expect(await objectExists(buckets.raw, createdKey)).toBe(false);
+    const leaked = await fetch(leakedGetUrl);
+    expect(leaked.status).toBe(404);
+
+    // And a fresh download-url is also a 404 (row gone).
     const after = await app.inject({
       method: 'GET',
       url: `/media/${createdId}/download-url`,

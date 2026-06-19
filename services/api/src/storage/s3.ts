@@ -19,6 +19,7 @@
  * Bucket map: raw uploads | rendered montages | thumbnails.
  */
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -208,6 +209,59 @@ export async function objectSize(
     return head.ContentLength ?? null;
   } catch {
     return null;
+  }
+}
+
+/** The subset of HeadObject we use to post-validate a completed upload. */
+export interface ObjectHead {
+  sizeBytes: number | null;
+  contentType: string | null;
+}
+
+/**
+ * Head an object → its size + content-type, or `null` if it doesn't exist.
+ *
+ * Used on POST /media/:id/complete to enforce the §10 size cap and the declared
+ * content-type AFTER the presigned PUT has landed: a presigned PUT can't cap size
+ * up-front, so this is the pragmatic post-upload gate (the caller rejects + deletes
+ * the object on a mismatch).
+ */
+export async function objectHead(
+  bucket: BucketName,
+  key: string,
+): Promise<ObjectHead | null> {
+  try {
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: assertBucket(bucket), Key: key }),
+    );
+    return {
+      sizeBytes: head.ContentLength ?? null,
+      contentType: head.ContentType ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete an object (best-effort). Used so a media removal also drops the bytes —
+ * a previously-issued presigned GET then 404s with the content (§6/§11: deleted
+ * content is gone, not merely hidden). Returns true on a successful delete.
+ *
+ * S3/MinIO DELETE is idempotent (deleting a missing key succeeds), so this is safe
+ * to call even if the upload never landed.
+ */
+export async function deleteObject(
+  bucket: BucketName,
+  key: string,
+): Promise<boolean> {
+  try {
+    await s3.send(
+      new DeleteObjectCommand({ Bucket: assertBucket(bucket), Key: key }),
+    );
+    return true;
+  } catch {
+    return false;
   }
 }
 
