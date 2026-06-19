@@ -185,6 +185,7 @@ describe('feed + social (live PG + redis + MinIO)', () => {
   let A: TestUser; // owner / publisher
   let B: TestUser; // member of G
   let C: TestUser; // NOT a member of G
+  let D: TestUser; // member of G (for the blocked-comment-author test)
   let groupG: string;
   let groupH: string; // second shared group (A+B) for dedupe
 
@@ -195,10 +196,13 @@ describe('feed + social (live PG + redis + MinIO)', () => {
     A = await signUp('a');
     B = await signUp('b');
     C = await signUp('c');
+    D = await signUp('d');
     groupG = await createGroup(A, `G ${runId}`);
     groupH = await createGroup(A, `H ${runId}`);
     await joinGroup(A, B, groupG);
     await joinGroup(A, B, groupH);
+    // D is also a member of G (so D can comment on A's montage; B can then block D).
+    await joinGroup(A, D, groupG);
     // C joins a DIFFERENT group (owned by A) so C is a real user but not in G/H.
     const groupX = await createGroup(A, `X ${runId}`);
     await joinGroup(A, C, groupX);
@@ -211,7 +215,12 @@ describe('feed + social (live PG + redis + MinIO)', () => {
     }
     await db
       .delete(blocks)
-      .where(inArray(blocks.blockerId, [A?.userId, B?.userId, C?.userId].filter(Boolean) as string[]))
+      .where(
+        inArray(
+          blocks.blockerId,
+          [A?.userId, B?.userId, C?.userId, D?.userId].filter(Boolean) as string[],
+        ),
+      )
       .catch(() => {});
     for (const e of emails) {
       await db.execute(sql`delete from "users" where email = ${e}`).catch(() => {});
@@ -442,6 +451,111 @@ describe('feed + social (live PG + redis + MinIO)', () => {
     });
     const finalIds = (finalList.json().items as Array<{ id: string }>).map((i) => i.id);
     expect(finalIds).toEqual([c2Id]);
+  });
+
+  it('comment list + feed card count HIDE comments authored by a blocked user (both directions)', async () => {
+    const mid = await seedPublishedMontage(A, [groupG]);
+
+    // B and D are both members of G; D comments. B (non-blocked) sees it; card count = 1.
+    const dComment = await app.inject({
+      method: 'POST',
+      url: `/montages/${mid}/comments`,
+      headers: auth(D),
+      payload: { text: 'from D' },
+    });
+    expect(dComment.statusCode).toBe(201);
+    const dCommentId = dComment.json().id as string;
+
+    const beforeList = await app.inject({
+      method: 'GET',
+      url: `/montages/${mid}/comments`,
+      headers: auth(B),
+    });
+    expect(beforeList.statusCode).toBe(200);
+    expect((beforeList.json().items as Array<{ id: string }>).map((i) => i.id)).toContain(
+      dCommentId,
+    );
+    const beforeCard = (
+      (await app.inject({ method: 'GET', url: '/feed', headers: auth(B) })).json()
+        .items as Array<{ montageId: string; commentCount: number }>
+    ).find((i) => i.montageId === mid)!;
+    expect(beforeCard.commentCount).toBe(1);
+
+    // B blocks D (blocker=B, blocked=D). Both-direction rule → B must not see D's comment.
+    await db.insert(blocks).values({ blockerId: B.userId, blockedId: D.userId }).onConflictDoNothing();
+
+    const afterList = await app.inject({
+      method: 'GET',
+      url: `/montages/${mid}/comments`,
+      headers: auth(B),
+    });
+    expect(afterList.statusCode).toBe(200);
+    expect((afterList.json().items as Array<{ id: string }>).map((i) => i.id)).not.toContain(
+      dCommentId,
+    );
+    // The feed card's comment count drops to 0 to match the now-empty visible list.
+    const afterCard = (
+      (await app.inject({ method: 'GET', url: '/feed', headers: auth(B) })).json()
+        .items as Array<{ montageId: string; commentCount: number }>
+    ).find((i) => i.montageId === mid)!;
+    expect(afterCard.commentCount).toBe(0);
+
+    // A non-blocked viewer (the owner A, member of G) STILL sees D's comment.
+    const ownerList = await app.inject({
+      method: 'GET',
+      url: `/montages/${mid}/comments`,
+      headers: auth(A),
+    });
+    expect((ownerList.json().items as Array<{ id: string }>).map((i) => i.id)).toContain(
+      dCommentId,
+    );
+
+    await db.delete(blocks).where(eq(blocks.blockerId, B.userId));
+  });
+
+  /* --------------------- malformed cursor → 422 (not 500) ------------------- */
+
+  it('crafted cursor with a non-uuid id → 422 (not 500); a valid cursor still paginates', async () => {
+    // Seed enough montages that a real first page returns a usable nextCursor.
+    for (let i = 0; i < 12; i++) {
+      await seedPublishedMontage(A, [groupG], { publishedAtOffsetMs: 2_000_000 + i * 60_000 });
+    }
+
+    // FEED: a base64url cursor whose id is NOT a uuid → 422 (never hits the DB cast).
+    const badId = Buffer.from(
+      JSON.stringify({ publishedAt: new Date().toISOString(), id: 'not-a-uuid' }),
+      'utf8',
+    ).toString('base64url');
+    const badFeed = await app.inject({
+      method: 'GET',
+      url: `/feed?cursor=${encodeURIComponent(badId)}`,
+      headers: auth(B),
+    });
+    expect(badFeed.statusCode).toBe(422);
+
+    // A valid feed cursor still paginates (200) — get one from a real first page.
+    const p1 = await app.inject({ method: 'GET', url: '/feed?limit=10', headers: auth(B) });
+    const c1 = p1.json().nextCursor as string;
+    expect(c1).toBeTruthy();
+    const p2 = await app.inject({
+      method: 'GET',
+      url: `/feed?limit=10&cursor=${encodeURIComponent(c1)}`,
+      headers: auth(B),
+    });
+    expect(p2.statusCode).toBe(200);
+
+    // COMMENTS: a malformed comment cursor (non-uuid id) → 422 (not 500).
+    const mid = await seedPublishedMontage(A, [groupG]);
+    const badCommentCursor = Buffer.from(
+      JSON.stringify({ createdAt: new Date().toISOString(), id: 'not-a-uuid' }),
+      'utf8',
+    ).toString('base64url');
+    const badComments = await app.inject({
+      method: 'GET',
+      url: `/montages/${mid}/comments?cursor=${encodeURIComponent(badCommentCursor)}`,
+      headers: auth(B),
+    });
+    expect(badComments.statusCode).toBe(422);
   });
 
   /* --------------------- non-member/blocked social → 404 -------------------- */

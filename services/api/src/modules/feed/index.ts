@@ -53,6 +53,11 @@ import { buckets, presignGet } from '../../storage/s3.js';
 /** Feed page size (§10: 10 cards/page). The query DTO already caps `limit` at 10. */
 const FEED_PAGE_SIZE = 10;
 
+/** uuid shape guard — a crafted cursor with a non-uuid id must 422, never reach the DB (500). */
+function isUuid(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
 /** A decoded keyset cursor — the (publishedAt, id) of the LAST card of a page. */
 interface FeedCursor {
   publishedAt: string; // ISO
@@ -76,6 +81,9 @@ function decodeCursor(raw: string): FeedCursor {
     ) {
       const c = parsed as FeedCursor;
       if (Number.isNaN(Date.parse(c.publishedAt))) throw new Error('bad ts');
+      // The id is interpolated into the keyset predicate (lt(montages.id, ...)); a
+      // non-uuid would reach the DB and 500 on the uuid cast. Reject it as a 422.
+      if (!isUuid(c.id)) throw new Error('bad id');
       return c;
     }
     throw new Error('shape');
@@ -260,12 +268,24 @@ export const feedModule: FastifyPluginAsync = async (app) => {
       reactionsByMontage.get(r.montageId)!.mine = r.type as ReactionType;
     }
 
-    // Batch-load comment counts (active only).
+    // Batch-load comment counts (active only). Block integrity: exclude comments
+    // authored by users the caller has blocked (either direction) — `excludeOwners`
+    // is the same both-direction block set — so the card's count matches what the
+    // viewer actually sees in GET /montages/:id/comments (which filters identically).
     const commentAgg = await db
       .select({ montageId: comments.montageId, n: sql<number>`count(*)::int` })
       .from(comments)
       .where(
-        and(inArray(comments.montageId, montageIds), eq(comments.status, 'active')),
+        and(
+          inArray(comments.montageId, montageIds),
+          eq(comments.status, 'active'),
+          excludeOwners.length > 0
+            ? sql`${comments.userId} not in (${sql.join(
+                excludeOwners.map((uid) => sql`${uid}`),
+                sql`, `,
+              )})`
+            : undefined,
+        ),
       )
       .groupBy(comments.montageId);
     const commentCountByMontage = new Map(commentAgg.map((r) => [r.montageId, r.n]));

@@ -43,7 +43,7 @@ import {
 import { errors } from '@twenty4/contracts/errors';
 
 import { requireSession } from '../../auth/middleware.js';
-import { canViewMontage } from '../../authz/montageVisibility.js';
+import { blockedUserIds, canViewMontage } from '../../authz/montageVisibility.js';
 import { db } from '../../db/index.js';
 import { buckets, deleteObject } from '../../storage/s3.js';
 import { throttleReaction, throttleComment } from '../../lib/rateLimit.js';
@@ -196,6 +196,12 @@ export const socialModule: FastifyPluginAsync = async (app) => {
 
     await requireViewable(id, me.id);
 
+    // Block integrity (both directions): a viewer must NOT see comments authored by
+    // users they blocked OR who blocked them — same rule that hides those owners'
+    // montages from the feed. Exclude those authors from the list (and the feed
+    // card's comment count is filtered the same way so the two stay consistent).
+    const excludeAuthors = await blockedUserIds(me.id);
+
     const cursor = q.cursor ? decodeCommentCursor(q.cursor) : null;
     const keyset = cursor
       ? or(
@@ -216,7 +222,19 @@ export const socialModule: FastifyPluginAsync = async (app) => {
         createdAt: comments.createdAt,
       })
       .from(comments)
-      .where(and(eq(comments.montageId, id), eq(comments.status, 'active'), keyset))
+      .where(
+        and(
+          eq(comments.montageId, id),
+          eq(comments.status, 'active'),
+          excludeAuthors.length > 0
+            ? sql`${comments.userId} not in (${sql.join(
+                excludeAuthors.map((uid) => sql`${uid}`),
+                sql`, `,
+              )})`
+            : undefined,
+          keyset,
+        ),
+      )
       .orderBy(asc(comments.createdAt), asc(comments.id))
       .limit(limit + 1);
 
@@ -371,6 +389,9 @@ function decodeCommentCursor(raw: string): CommentCursor {
     ) {
       const c = parsed as CommentCursor;
       if (Number.isNaN(Date.parse(c.createdAt))) throw new Error('bad ts');
+      // The id is interpolated into the keyset predicate (comments.id > ...); a
+      // non-uuid would reach the DB and 500 on the uuid cast. Reject it as a 422.
+      if (!isUuid(c.id)) throw new Error('bad id');
       return c;
     }
     throw new Error('shape');
