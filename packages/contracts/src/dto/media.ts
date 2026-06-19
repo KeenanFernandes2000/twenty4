@@ -73,6 +73,61 @@ export const createMediaRequestSchema = z
   .strict();
 export type CreateMediaRequest = z.infer<typeof createMediaRequestSchema>;
 
+/**
+ * POST /media (upload init) — the client requests an upload slot BEFORE PUTting
+ * bytes. It supplies the media kind, content-type, size, and capture metadata used
+ * by the §6 validation hierarchy + the 4am day-window. The server resolves
+ * `day_bucket` AUTHORITATIVELY from `deviceTimezone` (never a client-sent bucket),
+ * inserts a `pending` row, and returns a presigned PUT + the row id + the resolved
+ * bucket. This replaces the older upload-url→create two-call dance (kept below for
+ * back-compat) with a single init that also persists the metadata server-side.
+ */
+export const mediaInitRequestSchema = z
+  .object({
+    mediaType: mediaTypeSchema,
+    contentType: uploadMimeSchema,
+    sizeBytes: z.number().int().min(1).max(MAX_ITEM_BYTES),
+    /** True if captured in-app (the trusted camera path → auto-valid, §6). */
+    capturedInApp: z.boolean().default(false),
+    /** Best-resolved client capture time (EXIF→media-lib→file), ISO; null if none. */
+    originalTimestamp: z.string().datetime({ offset: true }).nullable().optional(),
+    /** Device clock at upload (anti-tamper delta vs server receive time, §6). */
+    deviceTimestamp: z.string().datetime({ offset: true }).optional(),
+    /** Device IANA tz at capture/upload — drives the authoritative day-window. */
+    deviceTimezone: z.string().min(1).optional(),
+    durationMs: z.number().int().min(0).max(MAX_VIDEO_MS).nullable().optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+  })
+  .strict();
+export type MediaInitRequest = z.infer<typeof mediaInitRequestSchema>;
+
+/** POST /media response — the upload slot. */
+export const mediaInitResponseSchema = z
+  .object({
+    /** The created `daily_media_item` id (poll/complete by this). */
+    id: z.string().uuid(),
+    /** Presigned PUT URL (raw bucket; TTL clamped to remaining lifetime). */
+    uploadUrl: z.string().url(),
+    /** Server-minted storage key (client echoes nothing; informational). */
+    storageKey: z.string(),
+    /** Server-resolved 4am day bucket (YYYY-MM-DD) — authoritative. */
+    dayBucket: z.string(),
+    /** Seconds until the upload URL expires. */
+    expiresIn: z.number().int().positive(),
+  })
+  .strict();
+export type MediaInitResponse = z.infer<typeof mediaInitResponseSchema>;
+
+/** GET /media/:id/download-url (owner-only) response. */
+export const mediaDownloadUrlResponseSchema = z
+  .object({
+    url: z.string().url(),
+    expiresIn: z.number().int().positive(),
+  })
+  .strict();
+export type MediaDownloadUrlResponse = z.infer<typeof mediaDownloadUrlResponseSchema>;
+
 /** A media item as returned to its owner. */
 export const mediaItemResponseSchema = z
   .object({
@@ -81,6 +136,10 @@ export const mediaItemResponseSchema = z
     dayBucket: z.string(), // YYYY-MM-DD
     validationStatus: validationStatusSchema,
     processingStatus: mediaProcessingStatusSchema,
+    /** True if captured in-app (trusted path). */
+    capturedInApp: z.boolean().optional(),
+    /** Anti-tamper: device clock vs server time delta exceeded the threshold (§6). */
+    deviceTimeSuspicious: z.boolean().optional(),
     durationMs: z.number().int().nullable().optional(),
     width: z.number().int().nullable().optional(),
     height: z.number().int().nullable().optional(),

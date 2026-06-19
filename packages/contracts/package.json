@@ -10,12 +10,14 @@
     "./db": "./src/db/index.ts",
     "./dto": "./src/dto/index.ts",
     "./edl": "./src/edl.ts",
+    "./dayWindow": "./src/dayWindow.ts",
     "./enums": "./src/enums.ts",
     "./analytics": "./src/analytics.ts",
     "./errors": "./src/errors.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -25,6 +27,7 @@
   "devDependencies": {
     "drizzle-kit": "0.31.10",
     "kysely": "0.29.2",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "vitest": "^4.1.9"
   }
 }

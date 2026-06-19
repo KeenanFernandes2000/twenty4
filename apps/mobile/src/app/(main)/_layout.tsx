@@ -29,6 +29,9 @@ export default function MainLayout() {
         name="today"
         options={{
           title: 'Today',
+          // The today tab is its own Stack (today/_layout) that renders per-screen
+          // chrome (grid header, forced-dark camera, modals); hide the tab header.
+          headerShown: false,
           tabBarIcon: ({ color, size }) => <Ionicons name="today-outline" color={color} size={size} />,
         }}
       />

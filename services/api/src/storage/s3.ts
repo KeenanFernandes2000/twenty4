@@ -1,19 +1,32 @@
 /**
  * Object storage — S3-compatible client (MinIO local / R2|S3 prod).
  *
- * Path-style addressing for MinIO; signed URLs only (no public read). This slice
- * keeps presign helpers real but simple — full TTL clamping to the content's
- * remaining lifetime (so leaked URLs 404 once deleted) lands in Slice 7.
+ * Path-style addressing for MinIO; signed URLs only (no public read). This module
+ * is the ONLY place that presigns; it enforces three security invariants so a
+ * client can never presign arbitrary objects (§11 "no public URLs", Q7):
+ *
+ *   1. BUCKET ALLOW-LIST — every presign goes through `assertBucket`, which only
+ *      accepts the three known buckets (raw | montages | thumbnails). A caller
+ *      cannot target an unknown bucket.
+ *   2. KEY NAMESPACING — raw keys are minted server-side as
+ *      `<userId>/<dayBucket>/<uuid>.<ext>` via `rawObjectKey`; the userId segment
+ *      is derived from the authenticated session, never from client input, so one
+ *      user can't presign into another user's namespace.
+ *   3. TTL CLAMP — `presignPut`/`presignGet` clamp the requested TTL to the
+ *      content's REMAINING LIFETIME (`clampTtl`), so a leaked signed URL dies with
+ *      the content (§6/§11: expired/deleted → 404). Never exceeds the default cap.
  *
  * Bucket map: raw uploads | rendered montages | thumbnails.
  */
 import {
   GetObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { randomUUID } from 'node:crypto';
 import { env } from '../env.js';
 
 export const s3 = new S3Client({
@@ -33,37 +46,169 @@ export const buckets = {
   thumbnails: env.S3_BUCKET_THUMBNAILS,
 } as const;
 
-export type BucketName = (typeof buckets)[keyof typeof buckets];
+export type BucketKind = keyof typeof buckets;
+export type BucketName = (typeof buckets)[BucketKind];
 
-const DEFAULT_PUT_TTL = 900; // 15 min
-const DEFAULT_GET_TTL = 3600; // 1 hour
+/** The allow-list: only these resolved bucket names may ever be presigned. */
+const ALLOWED_BUCKETS: ReadonlySet<string> = new Set(Object.values(buckets));
+
+const DEFAULT_PUT_TTL = 900; // 15 min — cap for upload PUTs.
+const DEFAULT_GET_TTL = 3600; // 1 hour — cap for download/playback GETs.
+
+/* --------------------------- security invariants --------------------------- */
 
 /**
- * Presign a PUT for direct client upload.
- * TODO(slice 7): clamp `ttl` to the content's remaining lifetime.
+ * Assert `bucket` is one of the three known buckets and return it typed. Throws
+ * (not a client-facing ApiError — this is an internal guard; callers only ever
+ * pass `buckets.raw` etc.) if an unknown bucket somehow reaches here.
  */
-export function presignPut(
-  bucket: BucketName,
-  key: string,
-  ttl: number = DEFAULT_PUT_TTL,
-): Promise<string> {
-  return getSignedUrl(s3, new PutObjectCommand({ Bucket: bucket, Key: key }), {
-    expiresIn: ttl,
-  });
+export function assertBucket(bucket: string): BucketName {
+  if (!ALLOWED_BUCKETS.has(bucket)) {
+    throw new Error(`storage: bucket not in allow-list: ${bucket}`);
+  }
+  return bucket as BucketName;
+}
+
+/** Map an upload MIME to a safe file extension for the object key. */
+const MIME_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+};
+
+/** Resolve a safe extension from a MIME type (defaults to `bin`). */
+export function extForMime(mime: string): string {
+  return MIME_EXT[mime] ?? 'bin';
 }
 
 /**
- * Presign a GET for download/playback.
- * TODO(slice 7): clamp `ttl` to the content's remaining lifetime.
+ * Mint a server-namespaced raw object key: `<userId>/<dayBucket>/<uuid>.<ext>`.
+ *
+ * The `userId` and `dayBucket` segments come from the authenticated session and
+ * the server-resolved day window — NEVER from client input — so a client can't
+ * presign into another user's (or another day's) namespace. The random uuid makes
+ * keys unguessable and collision-free.
  */
-export function presignGet(
+export function rawObjectKey(args: {
+  userId: string;
+  dayBucket: string; // YYYY-MM-DD
+  contentType: string;
+}): string {
+  // Defensive: the segments are server-derived, but strip anything that could
+  // escape the namespace (path traversal / separators) belt-and-suspenders.
+  const safeUser = sanitizeSegment(args.userId);
+  const safeDay = sanitizeSegment(args.dayBucket);
+  const ext = extForMime(args.contentType);
+  return `${safeUser}/${safeDay}/${randomUUID()}.${ext}`;
+}
+
+/**
+ * Strip path separators / traversal from a key segment: drop anything outside the
+ * safe charset, then collapse any remaining dot-runs so a `..` traversal can never
+ * survive (e.g. `../../etc` → `etc`). Leading/trailing dots are trimmed too.
+ */
+function sanitizeSegment(seg: string): string {
+  return seg
+    .replace(/[^A-Za-z0-9._-]/g, '')
+    .replace(/\.{2,}/g, '') // collapse `..`, `...` → '' (no traversal)
+    .replace(/^[.]+|[.]+$/g, ''); // trim leading/trailing dots
+}
+
+/**
+ * Clamp a requested TTL (seconds) to BOTH a default cap AND the content's
+ * remaining lifetime. Returns at least 1s (S3 rejects 0). When `expiryAt` is in
+ * the past, the content is already gone → 0 → callers should 404 instead of
+ * presigning, but we still return a clamped >=1 so a presign never outlives it.
+ *
+ * @param requested  Desired TTL in seconds.
+ * @param cap        Hard upper bound (default PUT/GET caps).
+ * @param expiryAt   When the underlying content expires (null = no known expiry,
+ *                   so only the cap applies).
+ */
+export function clampTtl(
+  requested: number,
+  cap: number,
+  expiryAt?: Date | null,
+): number {
+  let ttl = Math.min(requested, cap);
+  if (expiryAt) {
+    const remainingSec = Math.floor((expiryAt.getTime() - Date.now()) / 1000);
+    ttl = Math.min(ttl, remainingSec);
+  }
+  // S3 presign requires expiresIn >= 1.
+  return Math.max(1, ttl);
+}
+
+/* -------------------------------- presign ---------------------------------- */
+
+export interface PresignOptions {
+  /** Desired TTL (seconds). Clamped to the cap and to `expiryAt`. */
+  ttl?: number;
+  /** Content expiry — clamps TTL so a leaked URL 404s with the content. */
+  expiryAt?: Date | null;
+}
+
+/**
+ * Presign a PUT for direct client upload. Enforces the bucket allow-list and the
+ * TTL clamp (default cap 15 min, further clamped to `expiryAt`).
+ */
+export async function presignPut(
   bucket: BucketName,
   key: string,
-  ttl: number = DEFAULT_GET_TTL,
-): Promise<string> {
-  return getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), {
-    expiresIn: ttl,
+  opts: PresignOptions = {},
+): Promise<{ url: string; expiresIn: number }> {
+  const b = assertBucket(bucket);
+  const expiresIn = clampTtl(opts.ttl ?? DEFAULT_PUT_TTL, DEFAULT_PUT_TTL, opts.expiryAt);
+  const url = await getSignedUrl(s3, new PutObjectCommand({ Bucket: b, Key: key }), {
+    expiresIn,
   });
+  return { url, expiresIn };
+}
+
+/**
+ * Presign a GET for download/playback. Enforces the bucket allow-list and the TTL
+ * clamp (default cap 1 hour, further clamped to `expiryAt` so the URL can't
+ * outlive the content).
+ */
+export async function presignGet(
+  bucket: BucketName,
+  key: string,
+  opts: PresignOptions = {},
+): Promise<{ url: string; expiresIn: number }> {
+  const b = assertBucket(bucket);
+  const expiresIn = clampTtl(opts.ttl ?? DEFAULT_GET_TTL, DEFAULT_GET_TTL, opts.expiryAt);
+  const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: b, Key: key }), {
+    expiresIn,
+  });
+  return { url, expiresIn };
+}
+
+/** True if an object exists in `bucket` at `key` (used to verify upload completed). */
+export async function objectExists(bucket: BucketName, key: string): Promise<boolean> {
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: assertBucket(bucket), Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Head an object → its size in bytes (or null if missing). */
+export async function objectSize(
+  bucket: BucketName,
+  key: string,
+): Promise<number | null> {
+  try {
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: assertBucket(bucket), Key: key }),
+    );
+    return head.ContentLength ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Liveness probe for storage — HeadBucket on the raw bucket. */

@@ -13,6 +13,12 @@
  *     dir; pass it as `RenderOptions.srcMap`.
  * Then: `getRenderer().render(edl, { srcMap, outDir })` → upload videoPath/thumb.
  */
+import { Worker, type Job } from 'bullmq';
+import { MEDIA_QUEUE, VALIDATE_MEDIA_JOB, type ValidateMediaJob } from './queue.js';
+import { validateMedia } from './jobs/validateMedia.js';
+import { closeDb } from './db.js';
+import { closeStorage } from './storage.js';
+
 export { getRenderer, RemotionRenderer } from './render/index.js';
 export type {
   Renderer,
@@ -22,11 +28,60 @@ export type {
   SrcMap,
 } from './render/index.js';
 export * as media from './media/index.js';
+export { validateMedia } from './jobs/validateMedia.js';
+export type { ValidateMediaResult } from './jobs/validateMedia.js';
 
-// Running this file directly is a no-op for now (queue wiring lands next slice).
-if (import.meta.url === `file://${process.argv[1]}`) {
-  // eslint-disable-next-line no-console
-  console.log(
-    '@twenty4/worker: render half ready. Queue + intelligence wiring is next slice.',
+/* ----------------------------- BullMQ workers ------------------------------ */
+
+import { env } from './env.js';
+
+/** Parse REDIS_URL into BullMQ connection options (maxRetriesPerRequest:null). */
+function redisConnection(): { host: string; port: number; maxRetriesPerRequest: null } {
+  const u = new URL(env.REDIS_URL);
+  return {
+    host: u.hostname,
+    port: Number(u.port || 6379),
+    maxRetriesPerRequest: null,
+  };
+}
+
+/**
+ * Start the media-validation Worker (§6). Consumes `validate-media` and runs the
+ * hierarchy. A job NEVER crashes the worker: `validateMedia` swallows item errors
+ * and marks the row invalid/failed; the BullMQ handler only rethrows for true
+ * infra faults (so BullMQ's retry/backoff applies), but the row is still updated.
+ */
+export function startMediaWorker(): Worker<ValidateMediaJob> {
+  const worker = new Worker<ValidateMediaJob>(
+    MEDIA_QUEUE,
+    async (job: Job<ValidateMediaJob>) => {
+      if (job.name !== VALIDATE_MEDIA_JOB) return;
+      const serverReceiveTime = job.data.serverReceiveTime
+        ? new Date(job.data.serverReceiveTime)
+        : new Date();
+      return validateMedia(job.data.mediaId, serverReceiveTime);
+    },
+    { connection: redisConnection(), concurrency: 4 },
   );
+  worker.on('failed', (job, err) => {
+    // eslint-disable-next-line no-console
+    console.error(`[worker] validate-media job ${job?.id} failed:`, err.message);
+  });
+  return worker;
+}
+
+// Running this file directly boots the worker process (queue consumers).
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const mediaWorker = startMediaWorker();
+  // eslint-disable-next-line no-console
+  console.log('@twenty4/worker: media-validation worker running.');
+
+  const shutdown = async (): Promise<void> => {
+    await mediaWorker.close();
+    await closeDb();
+    closeStorage();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

@@ -39,6 +39,15 @@ import type {
   JoinGroupResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 2 (media: capture/upload + 4am day-window + validation) DTOs.
+import type {
+  MediaInitRequest,
+  MediaInitResponse,
+  MediaItemResponse,
+  MediaDownloadUrlResponse,
+  TodayMediaResponse,
+} from "@twenty4/contracts/dto";
+
 /** Wire shape of GET /groups/:id/members (array of member rows). */
 export interface GroupMembersResponse {
   items: GroupMemberResponse[];
@@ -251,16 +260,27 @@ export function createApiClient(options: ApiClientOptions) {
         request<JoinGroupResponse>(`/invites/${code}/join`, { method: "POST" }),
     },
 
-    // --- media ----------------------------------------------------------------
+    // --- media (Slice 2) ------------------------------------------------------
+    // Capture/upload + the 4am day-window + the validation hierarchy hand-off.
     media: {
-      // TODO(slice 2): presign + media-item DTOs.
-      // Request a signed PUT for raw upload (returns url + key).
-      createUpload: (input: unknown) =>
-        request<unknown>("/media/uploads", { method: "POST", body: input }),
-      // Register an uploaded item against today's day_bucket (§5/§6 validation).
-      create: (input: unknown) => request<unknown>("/media", { method: "POST", body: input }),
-      // Today's collected items for the current user.
-      today: () => request<unknown>("/media/today"),
+      /**
+       * Upload INIT: the server resolves `day_bucket` authoritatively from the
+       * device tz, inserts a `pending` row, and returns a presigned PUT URL + the
+       * new item id. The client then PUTs the bytes to `uploadUrl`, and calls
+       * `complete(id)`.
+       */
+      init: (input: MediaInitRequest) =>
+        request<MediaInitResponse>("/media", { method: "POST", body: input }),
+      /** Mark the item uploaded → enqueues the validate-media job (§6). */
+      complete: (id: string) =>
+        request<MediaItemResponse>(`/media/${id}/complete`, { method: "POST" }),
+      /** Today's collected items for the caller (Today screen). Pass the IANA tz. */
+      today: (tz?: string) =>
+        request<TodayMediaResponse>("/media/today", { query: { tz } }),
+      /** Owner-only signed GET for the raw item (save-to-gallery, §11.10). */
+      downloadUrl: (id: string) =>
+        request<MediaDownloadUrlResponse>(`/media/${id}/download-url`),
+      /** Owner removes an item → hard-delete (row + S3). */
       remove: (id: string) => request<void>(`/media/${id}`, { method: "DELETE" }),
     },
 

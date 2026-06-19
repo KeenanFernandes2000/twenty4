@@ -17,6 +17,7 @@
  */
 export * from './enums.js';
 export * from './edl.js';
+export * from './dayWindow.js';
 export * from './analytics.js';
 export * from './errors.js';
 export * from './db/index.js';

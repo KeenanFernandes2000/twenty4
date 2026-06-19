@@ -31,6 +31,24 @@ export interface PurgeAccountJob {
   requestedAt: string;
 }
 
+/* --------------------------- validate-media queue -------------------------- */
+
+/** Queue + job name for the §6 metadata-validation hierarchy. */
+export const MEDIA_QUEUE = 'media';
+export const VALIDATE_MEDIA_JOB = 'validate-media';
+
+/**
+ * Payload for the `validate-media` job. Only the media row id is needed — the
+ * worker re-reads the canonical row (storage key, content-type, day_bucket,
+ * device tz/clock, captured_in_app) so it's self-contained and can't act on
+ * stale client-passed values. `serverReceiveTime` anchors the anti-tamper delta
+ * to when the SERVER accepted the upload completion.
+ */
+export interface ValidateMediaJob {
+  mediaId: string;
+  serverReceiveTime: string;
+}
+
 let _accountQueue: Queue<PurgeAccountJob> | null = null;
 
 /** Lazily construct the account queue (avoids a Redis connection at import time). */
@@ -57,10 +75,41 @@ export async function enqueuePurgeAccount(payload: PurgeAccountJob): Promise<voi
   });
 }
 
+let _mediaQueue: Queue<ValidateMediaJob> | null = null;
+
+/** Lazily construct the media queue. */
+function mediaQueue(): Queue<ValidateMediaJob> {
+  if (!_mediaQueue) {
+    _mediaQueue = new Queue<ValidateMediaJob>(MEDIA_QUEUE, {
+      connection: redisConnection(),
+    });
+  }
+  return _mediaQueue;
+}
+
+/**
+ * Enqueue a `validate-media` job (called by POST /media/:id/complete after the
+ * client has PUT the raw object). The worker runs the §6 validation hierarchy and
+ * sets `validation_status` + flags. Retries a couple times (transient S3/network),
+ * but the worker also never crashes the process on a bad item — it marks invalid.
+ */
+export async function enqueueValidateMedia(payload: ValidateMediaJob): Promise<void> {
+  await mediaQueue().add(VALIDATE_MEDIA_JOB, payload, {
+    removeOnComplete: true,
+    removeOnFail: 100,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 3000 },
+  });
+}
+
 /** Close the queue connection (graceful shutdown). */
 export async function closeQueues(): Promise<void> {
   if (_accountQueue) {
     await _accountQueue.close();
     _accountQueue = null;
+  }
+  if (_mediaQueue) {
+    await _mediaQueue.close();
+    _mediaQueue = null;
   }
 }

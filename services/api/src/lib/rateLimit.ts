@@ -323,3 +323,33 @@ export async function throttleInvitePreview(args: {
     });
   }
 }
+
+/* ------------------------------- media limits ------------------------------ */
+
+/**
+ * Upload-init cap (§8 "rate limits on uploads", §10 max 50 daily items). Bounds
+ * how often a user can mint upload slots per window so a runaway client / abuse
+ * can't flood the raw bucket or the validate-media queue. The per-day item cap
+ * (§10) is enforced separately in the media module against the DB; this is the
+ * burst limiter. Fails OPEN (a Redis blip must not block a legitimate user from
+ * collecting today's moments; the DB item-cap is the hard ceiling).
+ */
+export const MEDIA_INIT_BUCKET = 'media:init:user';
+export const MEDIA_INIT_MAX = 60; // generous: 50 items + a few retries.
+export const MEDIA_INIT_WINDOW = 600; // per 10 min.
+
+/** Throttle a media upload-init; throws 429 over the per-user cap. */
+export async function throttleMediaInit(args: { userId: string }): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: MEDIA_INIT_BUCKET,
+    subject: args.userId,
+    max: MEDIA_INIT_MAX,
+    windowSeconds: MEDIA_INIT_WINDOW,
+    failClosed: false,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many uploads; slow down', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}

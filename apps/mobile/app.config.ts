@@ -18,9 +18,25 @@ const config: ExpoConfig = {
   ios: {
     bundleIdentifier: 'com.twenty4.app',
     supportsTablet: false,
+    infoPlist: {
+      // react-native-background-upload uses a background NSURLSession so a PUT can
+      // finish after the app is backgrounded (the spec's true-background upload).
+      UIBackgroundModes: ['fetch', 'processing'],
+    },
   },
   android: {
     package: 'com.twenty4.app',
+    // react-native-background-upload runs an Android foreground service for the
+    // upload (required by Google's policy on Android 8+). The library autolinks;
+    // these permissions let its service run + post the progress notification.
+    permissions: [
+      'INTERNET',
+      'FOREGROUND_SERVICE',
+      'FOREGROUND_SERVICE_DATA_SYNC',
+      'POST_NOTIFICATIONS',
+      'READ_MEDIA_IMAGES',
+      'READ_MEDIA_VIDEO',
+    ],
   },
   web: {
     bundler: 'metro',
