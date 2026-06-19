@@ -58,7 +58,7 @@ import {
   loadGroupOr404,
   outranks,
 } from '../../authz/groupMembership.js';
-import { throttleInviteJoin } from '../../lib/rateLimit.js';
+import { throttleInviteJoin, throttleInvitePreview } from '../../lib/rateLimit.js';
 
 /* --------------------------------- config ---------------------------------- */
 
@@ -470,6 +470,11 @@ export const invitesModule: FastifyPluginAsync = async (app) => {
   // never the member list or whether the caller is blocked.
   app.get('/:code', { preHandler: requireSession }, async (req, reply) => {
     const { code } = req.params as { code: string };
+    const me = req.user!;
+    // Rate-limit the preview: it exposes invite VALIDITY, so an unthrottled
+    // endpoint is a code-validity oracle (enumerate codes → find live invites).
+    await throttleInvitePreview({ userId: me.id, ip: req.ip });
+
     const [inv] = await db
       .select()
       .from(groupInvites)
@@ -511,7 +516,7 @@ export const invitesModule: FastifyPluginAsync = async (app) => {
     const { code } = req.params as { code: string };
     const me = req.user!;
 
-    await throttleInviteJoin(me.id);
+    await throttleInviteJoin({ userId: me.id, ip: req.ip });
 
     const joined = await db.transaction(async (tx) => {
       // Lock + read the invite row.
@@ -540,7 +545,14 @@ export const invitesModule: FastifyPluginAsync = async (app) => {
       if (group.status !== 'active')
         throw errors.inviteInvalid('group is no longer active');
 
-      // Already an ACTIVE member? Reject (idempotent-ish; do NOT burn a use).
+      // Inspect any prior membership row for this (group, user). We resolve its
+      // status BEFORE consuming an invite use so a rejected attempt never burns
+      // one. Three cases, by prior.status:
+      //   - 'active'  → already a member; reject 409 (do NOT burn a use).
+      //   - 'removed' → was kicked/removed by an owner/admin; MUST NOT self-rejoin
+      //                 via an invite — reject 403 (do NOT burn a use). An owner
+      //                 re-adding them is out of scope here.
+      //   - 'left'    → they chose to leave; MAY rejoin (re-activate below).
       const existing = (await tx
         .select()
         .from(groupMembers)
@@ -552,6 +564,13 @@ export const invitesModule: FastifyPluginAsync = async (app) => {
       if (prior && prior.status === 'active') {
         throw errors.conflict('already a member of this group', {
           reason: 'already_member',
+        });
+      }
+      if (prior && prior.status === 'removed') {
+        // Removed members cannot self-rejoin via any invite. Reject WITHOUT
+        // consuming a use so the code isn't griefed by a blocked user.
+        throw errors.forbidden('you were removed from this group', {
+          reason: 'removed_member',
         });
       }
 
@@ -575,7 +594,9 @@ export const invitesModule: FastifyPluginAsync = async (app) => {
         throw errors.inviteInvalid('invite is no longer valid');
       }
 
-      // Insert OR re-activate the membership.
+      // Insert OR re-activate the membership. `prior` here can only be a 'left'
+      // row (active/removed already returned above), so re-activation is the
+      // chosen-to-leave-then-rejoin path.
       if (prior) {
         await tx
           .update(groupMembers)

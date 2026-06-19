@@ -54,13 +54,14 @@ export async function getMembership(
 
 /**
  * Assert the caller is an ACTIVE member of the group. Returns the membership row
- * on success; throws `forbidden` otherwise.
+ * on success; throws `forbidden` (403) otherwise.
  *
- * Distinguishes a missing GROUP (404 not_found) from a non-member of an existing
- * group (403 forbidden) only when `requireGroupExists` is set — by default we
- * collapse both to 403 so we never confirm/deny a group's existence to a
- * non-member (no existence-leak). Handlers that have ALREADY loaded the group
- * (and thus know it exists) pass the loaded row to skip the extra lookup.
+ * We intentionally collapse "group does not exist" and "caller is not a member"
+ * into a single 403 — this helper never confirms or denies a group's existence
+ * to a non-member (no existence-leak), so it does NOT take the group row or
+ * distinguish 404 from 403. Handlers that genuinely need the group row (to read
+ * name/photo/status) load it separately via `loadGroupOr404`, which is NOT
+ * authorization.
  */
 export async function assertMemberOf(
   groupId: string,

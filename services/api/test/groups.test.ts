@@ -525,6 +525,140 @@ describe('groups — CRUD + members + invites/join (live DB + redis)', () => {
     );
   });
 
+  it('removed member CANNOT self-rejoin via a valid invite; a member who LEFT can', async () => {
+    // Fresh group + two fresh users: one we'll REMOVE, one we'll have LEAVE.
+    const create = await app.inject({
+      method: 'POST',
+      url: '/groups',
+      headers: auth(owner),
+      payload: { name: 'Rejoin Rules' },
+    });
+    const gid = create.json().id as string;
+
+    const removedUser = await signUp('removed');
+    const leftUser = await signUp('left');
+
+    // Both join via a multi-use invite.
+    const inv1 = await app.inject({
+      method: 'POST',
+      url: `/groups/${gid}/invites`,
+      headers: auth(owner),
+      payload: { maxUses: 25 },
+    });
+    const joinCode = inv1.json().code as string;
+    for (const u of [removedUser, leftUser]) {
+      const j = await app.inject({
+        method: 'POST',
+        url: `/invites/${joinCode}/join`,
+        headers: auth(u),
+      });
+      expect(j.statusCode).toBe(200);
+    }
+
+    // Owner REMOVES removedUser; leftUser voluntarily LEAVES.
+    const remove = await app.inject({
+      method: 'DELETE',
+      url: `/groups/${gid}/members/${removedUser.userId}`,
+      headers: auth(owner),
+    });
+    expect(remove.statusCode).toBe(204);
+    const leave = await app.inject({
+      method: 'POST',
+      url: `/groups/${gid}/leave`,
+      headers: auth(leftUser),
+    });
+    expect(leave.statusCode).toBe(204);
+
+    // A fresh, VALID invite to attempt rejoin with.
+    const inv2 = await app.inject({
+      method: 'POST',
+      url: `/groups/${gid}/invites`,
+      headers: auth(owner),
+      payload: { maxUses: 25 },
+    });
+    const rejoinCode = inv2.json().code as string;
+    const useBefore = await inviteUseCount(rejoinCode);
+
+    // REMOVED user attempts rejoin → 403 forbidden (NOT re-activated).
+    const removedRejoin = await app.inject({
+      method: 'POST',
+      url: `/invites/${rejoinCode}/join`,
+      headers: auth(removedUser),
+    });
+    expect(removedRejoin.statusCode).toBe(403);
+    expect(removedRejoin.json()).toMatchObject({
+      error: { code: 'forbidden', status: 403 },
+    });
+    // The membership row stays 'removed' (no silent auto-rejoin).
+    const removedRows = (await db.execute(
+      sql`select status from group_members where group_id = ${gid} and user_id = ${removedUser.userId}`,
+    )) as unknown as Array<{ status: string }>;
+    expect(removedRows[0]?.status).toBe('removed');
+    // Crucially: the rejected attempt did NOT burn a use.
+    expect(await inviteUseCount(rejoinCode)).toBe(useBefore);
+
+    // LEFT user CAN rejoin with the same valid code → 200, membership active.
+    const leftRejoin = await app.inject({
+      method: 'POST',
+      url: `/invites/${rejoinCode}/join`,
+      headers: auth(leftUser),
+    });
+    expect(leftRejoin.statusCode).toBe(200);
+    expect(leftRejoin.json().myRole).toBe('member');
+    const leftRows = (await db.execute(
+      sql`select status from group_members where group_id = ${gid} and user_id = ${leftUser.userId}`,
+    )) as unknown as Array<{ status: string }>;
+    expect(leftRows[0]?.status).toBe('active');
+    // The successful rejoin DID consume one use.
+    expect(await inviteUseCount(rejoinCode)).toBe(useBefore + 1);
+  }, 60_000);
+
+  it('GET /invites/:code is rate-limited (per-user/per-IP) → 429 after the cap', async () => {
+    // Dedicated user + dedicated client IP so the preview counters are isolated
+    // from the rest of the suite (which shares the inject default IP).
+    const previewer = await signUp('previewer');
+    const previewIp = `10.99.${(unique >> 8) & 0xff}.${(unique & 0xff) || 1}`;
+
+    const create = await app.inject({
+      method: 'POST',
+      url: '/groups',
+      headers: auth(owner),
+      payload: { name: 'Oracle Group' },
+    });
+    const gid = create.json().id as string;
+    const inv = await app.inject({
+      method: 'POST',
+      url: `/groups/${gid}/invites`,
+      headers: auth(owner),
+      payload: {},
+    });
+    const code = inv.json().code as string;
+
+    // INVITE_PREVIEW_MAX = 30 / 10min. Hammer past the cap; expect a 429 to appear.
+    let saw429 = false;
+    let okCount = 0;
+    for (let i = 0; i < 35; i++) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/invites/${code}`,
+        headers: { ...auth(previewer), 'x-forwarded-for': previewIp },
+      });
+      if (res.statusCode === 429) {
+        saw429 = true;
+        expect(res.json()).toMatchObject({
+          error: { code: 'rate_limited', status: 429 },
+        });
+        break;
+      }
+      expect(res.statusCode).toBe(200);
+      okCount++;
+    }
+    expect(saw429).toBe(true);
+    // The cap let through at most the configured allowance before tripping.
+    expect(okCount).toBeLessThanOrEqual(30);
+    expect(okCount).toBeGreaterThan(0);
+  }, 60_000);
+
   /** Read an invite's current use_count from the DB. */
   async function inviteUseCount(code: string): Promise<number> {
     const rows = (await db.execute(

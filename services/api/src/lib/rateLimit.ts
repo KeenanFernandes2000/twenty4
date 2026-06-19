@@ -231,29 +231,95 @@ async function ttlOf(bucket: string, subject: string): Promise<number> {
 
 /**
  * Invite-join cap (§8 "rate limits on … invite-join"; PLAN §3). Bound how often
- * a single user can ATTEMPT to redeem invite codes, so a leaked/guessed-code
- * brute force or join-spam is throttled. Keyed on the caller's user id. Fails
- * OPEN (not closed) if Redis is down: a transient Redis outage must not lock
- * legitimate users out of joining groups — the DB transaction is still the hard
- * race/cap guarantee, this limiter is only abuse-shaping on top.
+ * invite codes can be ATTEMPTED, so a leaked/guessed-code brute force or
+ * join-spam is throttled. Keyed on BOTH the caller's user id AND the client IP:
+ * the per-user key bounds a single account; the per-IP key bounds multi-account
+ * abuse (sign up N throwaway users behind one IP and brute the code space). The
+ * DB transaction remains the hard race/cap guarantee — these limiters are only
+ * abuse-shaping on top.
+ *
+ * Fails OPEN (not closed) if Redis is down. Justification: invite-join is a
+ * legitimate, user-initiated flow; a transient Redis outage must NOT lock real
+ * users out of joining their groups (availability). The DB txn's guarded
+ * `use_count < max_uses` UPDATE is still the hard cap that a brute force cannot
+ * exceed, so failing open here only removes the abuse-shaping layer, not the
+ * correctness/cap guarantee. (Contrast OTP/verify, which fail CLOSED because
+ * there the limiter IS the brute-force defense.)
  */
 export const INVITE_JOIN_BUCKET = 'invite:join:user';
+export const INVITE_JOIN_BUCKET_IP = 'invite:join:ip';
 export const INVITE_JOIN_MAX = 20;
-export const INVITE_JOIN_WINDOW = 600; // 20 join attempts / 10 min / user.
+export const INVITE_JOIN_IP_MAX = 60; // per-IP allows a few users behind one NAT.
+export const INVITE_JOIN_WINDOW = 600; // per 10 min.
 
-/** Throttle an invite-join attempt for a user; throws 429 when exceeded. */
-export async function throttleInviteJoin(userId: string): Promise<void> {
-  const res = await consumeFixedWindow({
+/**
+ * Throttle an invite-join attempt; throws 429 when EITHER the per-user OR the
+ * per-IP cap is exceeded. Both dimensions fail OPEN (see note above).
+ */
+export async function throttleInviteJoin(args: {
+  userId: string;
+  ip: string;
+}): Promise<void> {
+  const byUser = await consumeFixedWindow({
     bucket: INVITE_JOIN_BUCKET,
-    subject: userId,
+    subject: args.userId,
     max: INVITE_JOIN_MAX,
     windowSeconds: INVITE_JOIN_WINDOW,
     // Fail open: don't block real joins on a Redis blip (DB txn is the hard cap).
     failClosed: false,
   });
-  if (!res.allowed) {
+  const byIp = await consumeFixedWindow({
+    bucket: INVITE_JOIN_BUCKET_IP,
+    subject: args.ip,
+    max: INVITE_JOIN_IP_MAX,
+    windowSeconds: INVITE_JOIN_WINDOW,
+    failClosed: false,
+  });
+  if (!byUser.allowed || !byIp.allowed) {
     throw errors.rateLimited('too many join attempts; try again later', {
-      retryAfter: res.retryAfter,
+      retryAfter: Math.max(byUser.retryAfter, byIp.retryAfter),
+    });
+  }
+}
+
+/**
+ * Invite-preview cap (GET /invites/:code). The preview returns an invite's
+ * VALIDITY, which makes the endpoint a code-validity oracle: an attacker could
+ * enumerate the code space to discover live invites without ever attempting a
+ * join. Throttle it per-user AND per-IP (≤30/10min each) so the oracle can't be
+ * cheaply mined. Fails OPEN — a preview is a low-stakes read and the DB join txn
+ * is the real cap; we only want to blunt enumeration, not lock out browsing.
+ */
+export const INVITE_PREVIEW_BUCKET = 'invite:preview:user';
+export const INVITE_PREVIEW_BUCKET_IP = 'invite:preview:ip';
+export const INVITE_PREVIEW_MAX = 30;
+export const INVITE_PREVIEW_WINDOW = 600; // 30 previews / 10 min.
+
+/**
+ * Throttle an invite-preview; throws 429 when EITHER the per-user OR per-IP cap
+ * is exceeded.
+ */
+export async function throttleInvitePreview(args: {
+  userId: string;
+  ip: string;
+}): Promise<void> {
+  const byUser = await consumeFixedWindow({
+    bucket: INVITE_PREVIEW_BUCKET,
+    subject: args.userId,
+    max: INVITE_PREVIEW_MAX,
+    windowSeconds: INVITE_PREVIEW_WINDOW,
+    failClosed: false,
+  });
+  const byIp = await consumeFixedWindow({
+    bucket: INVITE_PREVIEW_BUCKET_IP,
+    subject: args.ip,
+    max: INVITE_PREVIEW_MAX,
+    windowSeconds: INVITE_PREVIEW_WINDOW,
+    failClosed: false,
+  });
+  if (!byUser.allowed || !byIp.allowed) {
+    throw errors.rateLimited('too many invite previews; try again later', {
+      retryAfter: Math.max(byUser.retryAfter, byIp.retryAfter),
     });
   }
 }
