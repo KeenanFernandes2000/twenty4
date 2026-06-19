@@ -33,6 +33,7 @@ import {
   useFeedCard,
 } from '../../../../lib/feed';
 import { useMe } from '../../../../lib/groups';
+import { trackCommentSent } from '../../../../lib/analytics';
 import { feedMockActive, mockComments, mockFeedCard } from '../../../../lib/feedMocks';
 
 function CommentRow({
@@ -95,8 +96,12 @@ export default function Comments() {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
-    if (!mock) add.mutate(text);
-  }, [draft, mock, add]);
+    if (!mock) {
+      add.mutate(text);
+      // §12 comment_sent — montage id ONLY; the comment TEXT never leaves the device.
+      if (id) trackCommentSent({ montageId: id });
+    }
+  }, [draft, mock, add, id]);
 
   const isLoading = !mock && query.isLoading;
 

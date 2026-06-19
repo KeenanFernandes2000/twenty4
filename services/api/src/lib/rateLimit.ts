@@ -452,3 +452,36 @@ export async function throttleComment(args: { userId: string }): Promise<void> {
     });
   }
 }
+
+/* ----------------------------- analytics limits ---------------------------- */
+
+/**
+ * Analytics-ingest cap (§12 / PLAN slice 9 "POST /analytics … rate-limited"). The
+ * ingest endpoint accepts a BATCH of client events; bound how often a client can
+ * POST so a runaway/abusive client can't flood the aggregate writer (or inflate
+ * counters). Generous — a normal client flushes a small batch periodically. Fails
+ * OPEN: analytics is non-essential telemetry; a Redis blip must not block a real
+ * client's session-critical traffic, and the firewall (strict parse → counts only)
+ * already bounds what a flood can ever persist (no content, just inflated counts).
+ */
+export const ANALYTICS_BUCKET = 'analytics:ingest:user';
+export const ANALYTICS_MAX = 120; // batches per 10 min — ample for periodic flush.
+export const ANALYTICS_WINDOW = 600;
+
+/** Throttle an analytics-ingest batch per user; 429 over cap (fails open). */
+export async function throttleAnalyticsIngest(args: {
+  userId: string;
+}): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: ANALYTICS_BUCKET,
+    subject: args.userId,
+    max: ANALYTICS_MAX,
+    windowSeconds: ANALYTICS_WINDOW,
+    failClosed: false,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many analytics requests; slow down', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}

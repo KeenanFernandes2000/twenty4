@@ -85,6 +85,13 @@ import type {
   AdminOpsResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 9 (§12 analytics: ingest firewall + admin readout) DTOs.
+import type {
+  AnalyticsIngestRequest,
+  AnalyticsIngestResponse,
+  AdminAnalyticsResponse,
+} from "@twenty4/contracts/dto";
+
 /** Wire shape of GET /groups/:id/members (array of member rows). */
 export interface GroupMembersResponse {
   items: GroupMemberResponse[];
@@ -405,6 +412,17 @@ export function createApiClient(options: ApiClientOptions) {
     // Reports + blocks live at ROOT resource paths per spec §8. A report/block
     // against content the caller can't see → 404 (no existence leak). Blocking is
     // immediate — the feed + every social action already filter both directions.
+    // --- analytics (§12 ingest firewall; Slice 9) ----------------------------
+    // Batch-submit §12 events. The SERVER strictly validates EACH against the §12
+    // discriminated union (ids/counts/enums only) and stores ONLY anonymized
+    // aggregate counts — an unknown type or any extra/content field is rejected/
+    // dropped. NEVER send user content here (the server would reject it anyway).
+    analytics: {
+      /** Submit a batch of §12 events → {accepted, dropped}. (202.) */
+      ingest: (input: AnalyticsIngestRequest) =>
+        request<AnalyticsIngestResponse>("/analytics", { method: "POST", body: input }),
+    },
+
     safety: {
       /** Report a montage | comment | user. Dedups a repeat OPEN report (idempotent). */
       report: (input: CreateReportRequest) =>
@@ -464,6 +482,9 @@ export function createApiClient(options: ApiClientOptions) {
         request<void>(`/admin/comments/${commentId}`, { method: "DELETE" }),
       /** Ops dashboard: per-queue job counts, per-bucket storage usage, metrics. */
       ops: () => request<AdminOpsResponse>("/admin/ops"),
+      /** §12 analytics rollups (counts only) over a UTC day window. */
+      analytics: (params: { since?: string; until?: string } = {}) =>
+        request<AdminAnalyticsResponse>("/admin/analytics", { query: params }),
     },
   };
 }

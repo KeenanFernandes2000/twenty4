@@ -20,6 +20,7 @@ import type { MediaInitRequest } from '@twenty4/contracts/dto';
 import { apiClient } from '../apiClient';
 import { queryClient } from '../queryClient';
 import { mediaKeys } from '../media';
+import { trackMediaAdded } from '../analytics';
 import { useUploadStore, type UploadTask } from '../../stores/uploadStore';
 import { putFile } from './transfer';
 
@@ -88,6 +89,10 @@ export async function runUpload(localId: string): Promise<void> {
     await apiClient.media.complete(init.id);
 
     useUploadStore.getState().markDone(localId);
+
+    // §12 media_added — media-type enum only (no bytes/EXIF/content); fired when an
+    // item finishes uploading.
+    trackMediaAdded({ mediaType: task.meta.mediaType });
 
     // 4. refresh Today so the new item shows.
     void queryClient.invalidateQueries({ queryKey: mediaKeys.today() });

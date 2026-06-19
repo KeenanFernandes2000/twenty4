@@ -18,6 +18,7 @@ import { Avatar, Button, EmptyState, ErrorRetry, Icon, Skeleton } from '../../..
 import { useGroups, groupErrorMessage } from '../../../lib/groups';
 import { usePublish, useReplace, montageErrorStatus, montageErrorMessage } from '../../../lib/montage';
 import { ReplaceConfirmSheet } from '../../../features/montage/ReplaceConfirmSheet';
+import { trackMontagePublished } from '../../../lib/analytics';
 import { montageMockActive, MOCK_PUBLISH_GROUPS } from '../../../lib/montageMocks';
 
 interface GroupChoice {
@@ -73,8 +74,11 @@ export default function Publish() {
   const isLoading = !mock && groupsQuery.isLoading;
   const isError = !mock && groupsQuery.isError;
 
-  const goPublished = () =>
+  const goPublished = () => {
+    // §12 montage_published — montage id + group count only (no group names/content).
+    if (id) trackMontagePublished({ montageId: id, groupCount: selected.size });
     router.replace({ pathname: '/(main)/today/published', params: { id, groups: selectedNames.join('•') } });
+  };
 
   const onPublish = () => {
     if (mock || !id || count === 0) return;

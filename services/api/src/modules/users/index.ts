@@ -22,6 +22,7 @@ import { errors } from '@twenty4/contracts/errors';
 import { requireSession } from '../../auth/middleware.js';
 import { db } from '../../db/index.js';
 import { enqueuePurgeAccount } from '../../queue/producers.js';
+import { emitAccountDeletionRequested } from '../../analytics/emit.js';
 
 /**
  * Project a user row into the `me` response shape.
@@ -133,6 +134,12 @@ export const usersModule: FastifyPluginAsync = async (app) => {
 
     // 3) AFTER commit: enqueue the purge job (worker hard-deletes content + row).
     await enqueuePurgeAccount({ userId: me.id, requestedAt: new Date().toISOString() });
+
+    // §12: there is no `account_deleted` name in the closed §12 set, so we record
+    // the user-initiated deletion REQUEST as a content-free operational aggregate
+    // (`cleanup_job_result` job='account-deletion-requested'); the worker's
+    // purge-account job emits the purge-completion aggregate. No content/PII.
+    emitAccountDeletionRequested({ userId: me.id });
 
     reply.code(204).send();
   });

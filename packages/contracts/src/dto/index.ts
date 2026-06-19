@@ -12,3 +12,4 @@ export * from './feed.js';
 export * from './social.js';
 export * from './safety.js';
 export * from './admin.js';
+export * from './analytics.js';

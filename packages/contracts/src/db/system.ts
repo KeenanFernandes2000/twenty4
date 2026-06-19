@@ -8,8 +8,8 @@
  * idempotency_key: dedupes publish/replace (§8 cross-cutting). A key scopes to a
  * user + endpoint; the stored response lets a retried request return the same result.
  */
-import { integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import { createdAt, tsTz, uuidPk } from './_shared.js';
+import { bigint, date, integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { createdAt, tsTz, updatedAt, uuidPk } from './_shared.js';
 
 /* -------------------------------- audit_log -------------------------------- */
 export const auditLog = pgTable('audit_log', {
@@ -55,3 +55,50 @@ export const idempotencyKeys = pgTable(
 
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type NewIdempotencyKey = typeof idempotencyKeys.$inferInsert;
+
+/* --------------------------- analytics_aggregate --------------------------- */
+/**
+ * analytics_aggregate (§12 + §6 Q6) — ANONYMIZED rollups, the ONLY thing that
+ * persists from the analytics firewall.
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │ PRIVACY FIREWALL OUTPUT. We store ONE counter row per                      │
+ * │ (event_type, day, dimension) — a COUNT, never a per-event row with a user  │
+ * │ id and NEVER any user content. `event_type` is a §12 enum name; `dimension`│
+ * │ is an optional LOW-CARDINALITY, content-free breakdown key (a §12 enum     │
+ * │ VALUE only — e.g. a theme/reaction/media-type/provider/error-code), '' when│
+ * │ none. The ingest helper increments `count` with an UPSERT; no identifiers  │
+ * │ are retained, so the aggregates cannot be re-personalized.                 │
+ * └──────────────────────────────────────────────────────────────────────────┘
+ */
+export const analyticsAggregates = pgTable(
+  'analytics_aggregate',
+  {
+    id: uuidPk(),
+    /** §12 event name (e.g. 'montage_published'). Validated against the closed set upstream. */
+    eventType: text('event_type').notNull(),
+    /** UTC calendar day the events were counted on (server-stamped at ingest). */
+    day: date('day').notNull(),
+    /**
+     * Optional content-free breakdown key — a §12 enum VALUE only (theme / reaction
+     * type / media type / provider / error code). '' (empty) when the event has no
+     * breakdown. NEVER free text / ids / content.
+     */
+    dimension: text('dimension').notNull().default(''),
+    /** Monotonic event count for this (event_type, day, dimension) bucket. */
+    count: bigint('count', { mode: 'number' }).notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  // One counter row per (event_type, day, dimension) — the UPSERT target.
+  (t) => [
+    uniqueIndex('analytics_aggregate_event_day_dim_uq').on(
+      t.eventType,
+      t.day,
+      t.dimension,
+    ),
+  ],
+);
+
+export type AnalyticsAggregate = typeof analyticsAggregates.$inferSelect;
+export type NewAnalyticsAggregate = typeof analyticsAggregates.$inferInsert;

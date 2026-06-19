@@ -6,6 +6,7 @@
  * Data: useMontage(id) reads back the published montage (published_at +
  * expiry_at) for the countdown. Web-safe via the mock montage (status=published).
  */
+import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -14,6 +15,7 @@ import { useTheme } from '../../../theme';
 import { Button, Icon } from '../../../ui';
 import { timeRemaining } from '../../../features/montage/labels';
 import { useMontage } from '../../../lib/montage';
+import { scheduleExpiryReminder } from '../../../lib/reminders';
 import { montageMockActive, mockMontageForMode } from '../../../lib/montageMocks';
 
 export default function Published() {
@@ -26,6 +28,15 @@ export default function Published() {
   const mock = montageMockActive();
   const query = useMontage(id, { enabled: !mock, pollMs: 60_000 });
   const montage = mock ? mockMontageForMode() : query.data;
+
+  // Local reminder (Phase-1): once we know the published montage's expiry, schedule
+  // a one-shot "expiring soon" nudge ~2h before the 24h hard-delete. No-op on web /
+  // when notifications aren't granted; replaces any prior reminder for this id.
+  const expiryAt = montage?.expiryAt;
+  useEffect(() => {
+    if (mock || !id || !expiryAt) return;
+    void scheduleExpiryReminder({ montageId: id, expiryAt });
+  }, [mock, id, expiryAt]);
 
   const remaining = timeRemaining(montage?.expiryAt) ?? '23h 59m';
   // Group names: passed through the route params on publish, or mock copy.

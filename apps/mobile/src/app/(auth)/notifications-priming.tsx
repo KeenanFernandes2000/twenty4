@@ -12,6 +12,7 @@ import { PrimingHero } from '../../components/PrimingHero';
 import { AuthScaffold } from '../../components/AuthScaffold';
 import { useTheme } from '../../theme';
 import { Button, Icon, type IconName } from '../../ui';
+import { requestPermission, scheduleCaptureReminder } from '../../lib/reminders';
 
 const ALERTS: { icon: IconName; title: string; body: string }[] = [
   { icon: 'alarm-outline', title: 'Capture reminder', body: 'A nudge so today’s recap doesn’t slip by.' },
@@ -25,12 +26,10 @@ export default function NotificationsPriming() {
 
   async function enable() {
     if (Platform.OS !== 'web') {
-      try {
-        const Notifications = await import('expo-notifications');
-        await Notifications.requestPermissionsAsync();
-      } catch {
-        // permission module unavailable — continue regardless
-      }
+      // Politely request permission, then arm the daily capture reminder so the
+      // habit nudge starts immediately. Both no-op on web / if the user declines.
+      const granted = await requestPermission();
+      if (granted) await scheduleCaptureReminder();
     }
     router.push('/(auth)/legal');
   }

@@ -78,6 +78,13 @@
       "when": 1781866548071,
       "tag": "0010_slice8_snapshot_purge_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1781867042871,
+      "tag": "0011_slice9_analytics_aggregate",
+      "breakpoints": true
     }
   ]
 }

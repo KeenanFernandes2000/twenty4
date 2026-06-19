@@ -49,6 +49,7 @@ import { assertMemberOf } from '../../authz/groupMembership.js';
 import { blockedUserIds } from '../../authz/montageVisibility.js';
 import { db } from '../../db/index.js';
 import { buckets, presignGet } from '../../storage/s3.js';
+import { emitFeedViewed } from '../../analytics/emit.js';
 
 /** Feed page size (§10: 10 cards/page). The query DTO already caps `limit` at 10. */
 const FEED_PAGE_SIZE = 10;
@@ -134,6 +135,9 @@ export const feedModule: FastifyPluginAsync = async (app) => {
         .where(and(eq(groupMembers.userId, me.id), eq(groupMembers.status, 'active')));
       scopeGroupIds = [...new Set(rows.map((r) => r.groupId))];
     }
+
+    // §12 feed_viewed (optional group id ONLY). Emitted once per feed read.
+    emitFeedViewed({ userId: me.id, groupId: q.group });
 
     // No groups ⇒ nothing visible (and `inArray(..., [])` is invalid SQL).
     if (scopeGroupIds.length === 0) {

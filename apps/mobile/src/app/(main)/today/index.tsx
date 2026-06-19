@@ -26,6 +26,7 @@ import { MediaTile } from '../../../components/MediaTile';
 import { useDeleteMedia, useTodayMedia, mediaErrorMessage } from '../../../lib/media';
 import { useGenerate, montageErrorMessage } from '../../../lib/montage';
 import { nextDayClose } from '../../../lib/dayClose';
+import { trackMontageGenerateTapped } from '../../../lib/analytics';
 import { mockMode, mockToday } from '../../../lib/mediaMocks';
 import { useUploadStore, selectActiveCount } from '../../../stores/uploadStore';
 import type { MediaItemResponse, TodayMediaResponse } from '@twenty4/contracts/dto';
@@ -85,6 +86,8 @@ export default function Today() {
   const onCreate = () => {
     const validIds = items.filter((it) => it.validationStatus === 'valid').map((it) => it.id);
     if (validIds.length === 0) return;
+    // §12 montage_generate_tapped — theme/music enum + item count only (no content).
+    trackMontageGenerateTapped({ theme: 'Random', musicId: 'golden-hour', itemCount: validIds.length });
     generate.mutate(
       { mediaIds: validIds, theme: 'Random', musicId: 'golden-hour' },
       {

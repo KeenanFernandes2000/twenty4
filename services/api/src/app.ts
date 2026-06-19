@@ -27,6 +27,7 @@ import { feedModule } from './modules/feed/index.js';
 import { socialModule, commentsModule } from './modules/social/index.js';
 import { reportsModule, blocksModule } from './modules/safety/index.js';
 import { adminModule } from './modules/admin/index.js';
+import { analyticsModule } from './modules/analytics/index.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -153,6 +154,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(reportsModule, { prefix: '/reports' });
   await app.register(blocksModule, { prefix: '/blocks' });
   await app.register(adminModule, { prefix: '/admin' });
+  // §12 analytics ingest firewall (requireSession, batched, content-free aggregates).
+  await app.register(analyticsModule, { prefix: '/analytics' });
 
   return app;
 }

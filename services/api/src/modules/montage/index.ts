@@ -67,6 +67,7 @@ import { env } from '../../env.js';
 import { buckets, presignGet } from '../../storage/s3.js';
 import { withIdempotency, hashBody } from '../../lib/idempotency.js';
 import { throttleRenderTrigger } from '../../lib/rateLimit.js';
+import { emitMontageGenerated, emitMontagePublished } from '../../analytics/emit.js';
 import {
   enqueueRenderMontage,
   enqueueExpireMontage,
@@ -313,6 +314,14 @@ export const montageModule: FastifyPluginAsync = async (app) => {
       .update(montages)
       .set({ renderJobId })
       .where(eq(montages.id, row.id));
+
+    // §12 montage_generated (content-free: theme enum + music id + item count).
+    emitMontageGenerated({
+      userId: me.id,
+      theme: body.theme,
+      musicId: body.musicId,
+      itemCount: selectedMediaIds.length,
+    });
 
     reply.code(202);
     return montageGeneratingResponseSchema.parse({
@@ -670,6 +679,15 @@ async function publishMontageTx(
     { userId: published.userId, dayBucket: published.dayBucket, montageId: published.id },
     env.RAW_PURGE_GRACE_MINUTES * 60 * 1000,
   );
+
+  // §12 montage_published (montage id + group count ONLY). Emitted from inside the
+  // publish callback so an IDEMPOTENT re-publish replay (short-circuited by
+  // `withIdempotency`, which doesn't re-run this) does NOT double-count.
+  emitMontagePublished({
+    userId: published.userId,
+    montageId: published.id,
+    groupCount: groupIds.length,
+  });
 
   return published;
 }

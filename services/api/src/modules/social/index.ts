@@ -47,6 +47,7 @@ import { blockedUserIds, canViewMontage } from '../../authz/montageVisibility.js
 import { db } from '../../db/index.js';
 import { buckets, deleteObject } from '../../storage/s3.js';
 import { throttleReaction, throttleComment } from '../../lib/rateLimit.js';
+import { emitReactionSent, emitCommentSent } from '../../analytics/emit.js';
 
 /** Cheap uuid shape guard so a malformed :id 404s instead of erroring on the cast. */
 function isUuid(v: string): boolean {
@@ -146,6 +147,9 @@ export const socialModule: FastifyPluginAsync = async (app) => {
         set: { type: body.type },
       })
       .returning();
+
+    // §12 reaction_sent (montage id + reaction enum ONLY — no content).
+    emitReactionSent({ userId: me.id, montageId: id, reactionType: row!.type });
 
     const summary = await buildReactionSummary(id, me.id);
     reply.code(200);
@@ -265,6 +269,9 @@ export const socialModule: FastifyPluginAsync = async (app) => {
       .insert(comments)
       .values({ montageId: id, userId: me.id, text: body.text, status: 'active' })
       .returning();
+
+    // §12 comment_sent (montage id ONLY — the comment TEXT is NEVER emitted).
+    emitCommentSent({ userId: me.id, montageId: id });
 
     reply.code(201);
     return toCommentResponse(row!);

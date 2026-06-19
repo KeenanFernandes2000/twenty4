@@ -25,6 +25,8 @@ import { queryClient } from '../lib/queryClient';
 import { useAuthStore } from '../stores/authStore';
 import { useSuspensionStore } from '../stores/suspensionStore';
 import { SuspendedScreen } from '../features/safety/SuspendedScreen';
+import { ErrorBoundary, OfflineBanner, ToastHost } from '../components/states';
+import { startAnalytics, trackAppOpen } from '../lib/analytics';
 
 /**
  * Drives navigation from auth state. Rendered inside the providers so it can
@@ -42,6 +44,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   // `segments` is a typed tuple under typedRoutes; widen for inspection.
   const onGallery = (segments as string[])[0] === 'gallery';
+  // The dev-only /states-* demo routes (global ErrorBoundary + ToastHost demos)
+  // stay reachable in any auth state for the screenshot harness.
+  const onStatesDemo = (segments as string[])[0]?.startsWith('states-') ?? false;
 
   // Hydrate the persisted token exactly once on mount.
   useEffect(() => {
@@ -55,8 +60,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // inspect nested segments without tuple-index errors.
     const parts = segments as string[];
     const root = parts[0];
-    // Leave the design-system gallery reachable regardless of auth state.
-    if (root === 'gallery') return;
+    // Leave the design-system gallery + the states-* demos reachable in any state.
+    if (root === 'gallery' || root?.startsWith('states-')) return;
 
     const inAuthGroup = root === '(auth)';
     // The invite deep-link route (`/invite/[code]`) redirects into the Groups
@@ -92,8 +97,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   // 7.5 Suspended gate: a signed-in account flagged `suspended` is blocked from
   // the app — render the global Suspended screen instead of the tabs. The
-  // design-system /gallery route stays reachable for review.
-  if (suspended && status === 'signedIn' && !onGallery) {
+  // design-system /gallery route + the states-error demo stay reachable.
+  if (suspended && status === 'signedIn' && !onGallery && !onStatesDemo) {
     return <SuspendedScreen />;
   }
 
@@ -102,6 +107,15 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   const fontsReady = useAppFonts();
+
+  // Start the batched, content-free analytics emitter once, and fire the first
+  // app_open. Subsequent foregrounds emit app_open + flush via the emitter's own
+  // AppState listener. Teardown stops the interval + flushes a final batch.
+  useEffect(() => {
+    trackAppOpen();
+    const stop = startAnalytics();
+    return stop;
+  }, []);
 
   if (!fontsReady) {
     // Keep the splash up until fonts load to avoid a fallback-font flash.
@@ -114,18 +128,26 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
             <StatusBar style="auto" />
-            <AuthGate>
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="index" />
-                <Stack.Screen
-                  name="gallery"
-                  options={{ headerShown: true, title: 'Design System' }}
-                />
-                <Stack.Screen name="(auth)" />
-                <Stack.Screen name="(main)" />
-                <Stack.Screen name="invite/[code]" />
-              </Stack>
-            </AuthGate>
+            {/* Global 7.x render-error net wraps the whole navigator. */}
+            <ErrorBoundary>
+              <AuthGate>
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="index" />
+                  <Stack.Screen
+                    name="gallery"
+                    options={{ headerShown: true, title: 'Design System' }}
+                  />
+                  <Stack.Screen name="(auth)" />
+                  <Stack.Screen name="(main)" />
+                  <Stack.Screen name="invite/[code]" />
+                  <Stack.Screen name="states-error" />
+                  <Stack.Screen name="states-toast" />
+                </Stack>
+              </AuthGate>
+            </ErrorBoundary>
+            {/* Global 7.x overlays — mounted once, above the navigator. */}
+            <OfflineBanner />
+            <ToastHost />
           </ThemeProvider>
         </QueryClientProvider>
       </SafeAreaProvider>

@@ -22,6 +22,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
 import {
+  analyticsAggregates,
   comments,
   montages,
   reports,
@@ -37,6 +38,7 @@ import {
   adminResolveReportResponseSchema,
   adminRemoveContentRequestSchema,
   adminOpsResponseSchema,
+  adminAnalyticsResponseSchema,
   type AdminUserSummary,
   type AdminReport,
   type ReportResolveAction,
@@ -49,6 +51,7 @@ import { db } from '../../db/index.js';
 import { buckets, bucketUsage } from '../../storage/s3.js';
 import { getQueueCounts } from '../../queue/producers.js';
 import { writeAuditTombstone } from '../../lib/audit.js';
+import { utcDay } from '../../analytics/aggregate.js';
 import { adminRemoveMontage } from './removeMontage.js';
 
 function isUuid(v: string): boolean {
@@ -477,7 +480,63 @@ export const adminModule: FastifyPluginAsync = async (app) => {
       metrics,
     });
   });
+
+  /* ---------------------------- GET /admin/analytics ---------------------- */
+  // §12 analytics rollups for the ops dashboard — COUNTS ONLY (no ids, no content).
+  // Reads the `analytics_aggregate` counters over a UTC day window (default last 30
+  // days). Returns the per-(event_type, day, dimension) rows + per-event totals.
+  app.get('/analytics', async (req, reply) => {
+    const raw = (req.query ?? {}) as Record<string, unknown>;
+    // Window: ?since / ?until as YYYY-MM-DD (UTC). Default to the last 30 days.
+    const until = isYmd(raw.until) ? (raw.until as string) : utcDay();
+    const since = isYmd(raw.since)
+      ? (raw.since as string)
+      : utcDay(new Date(Date.now() - 30 * 24 * 3600 * 1000));
+
+    const rows = await db
+      .select({
+        eventType: analyticsAggregates.eventType,
+        day: analyticsAggregates.day,
+        dimension: analyticsAggregates.dimension,
+        count: analyticsAggregates.count,
+      })
+      .from(analyticsAggregates)
+      .where(
+        and(
+          sql`${analyticsAggregates.day} >= ${since}`,
+          sql`${analyticsAggregates.day} <= ${until}`,
+        ),
+      )
+      .orderBy(desc(analyticsAggregates.day), analyticsAggregates.eventType);
+
+    // Per-event_type totals over the window (counts only).
+    const totalsMap = new Map<string, number>();
+    for (const r of rows) {
+      totalsMap.set(r.eventType, (totalsMap.get(r.eventType) ?? 0) + Number(r.count));
+    }
+
+    reply.code(200);
+    return adminAnalyticsResponseSchema.parse({
+      since,
+      until,
+      rows: rows.map((r) => ({
+        eventType: r.eventType,
+        day: typeof r.day === 'string' ? r.day : utcDay(new Date(r.day as unknown as string)),
+        dimension: r.dimension,
+        count: Number(r.count),
+      })),
+      totals: [...totalsMap.entries()].map(([eventType, count]) => ({
+        eventType,
+        count,
+      })),
+    });
+  });
 };
+
+/** True for a YYYY-MM-DD calendar-day string. */
+function isYmd(v: unknown): v is string {
+  return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
+}
 
 /* ------------------------------- helpers ----------------------------------- */
 
