@@ -4,6 +4,7 @@
  * LOAD-BEARING INDEX (§5): composite (user_id, day_bucket, validation_status).
  * This drives "today's valid media for this user" reads on every generate/review.
  */
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -95,6 +96,13 @@ export const dailyMediaItems = pgTable(
       t.dayBucket,
       t.validationStatus,
     ),
+    // Slice 7 (§6 raw lifecycle): drives the raw-purge sweep — find items whose
+    // grace/day-close `expiry_at` has passed without scanning the whole table.
+    // Partial (only rows that have an expiry set, i.e. published-day raw) keeps it
+    // tiny. Belt-and-suspenders to the per-publish delayed cleanup-raw job.
+    index('daily_media_item_expiry_idx')
+      .on(t.expiryAt)
+      .where(sql`${t.expiryAt} is not null`),
   ],
 );
 

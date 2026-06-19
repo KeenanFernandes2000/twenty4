@@ -56,6 +56,8 @@ export const MONTAGE_QUEUE = 'montage';
 export const RENDER_MONTAGE_JOB = 'render-montage';
 export const EXPIRE_MONTAGE_JOB = 'expire-montage';
 export const CLEANUP_RAW_JOB = 'cleanup-raw';
+/** Replace cascade (§6 Q2): hard-delete the prior (superseded) montage's content. */
+export const SUPERSEDE_CLEANUP_JOB = 'supersede-cleanup';
 
 /**
  * Payload for the `render-montage` job. Only the montage id is needed — the worker
@@ -80,6 +82,17 @@ export interface CleanupRawJob {
   dayBucket: string;
   /** The montage whose publish triggered the purge (audit context). */
   montageId: string;
+}
+
+/**
+ * Payload for the `supersede-cleanup` job (§6 Q2 replace cascade). Hard-deletes the
+ * PRIOR (superseded) montage's content — S3 video+thumb, row, cascade reactions/
+ * comments/visibility, tombstone. `replacementId` is audit context (the new live
+ * montage). The worker consumer is idempotent (already-gone → no-op).
+ */
+export interface SupersedeCleanupJob {
+  priorMontageId: string;
+  replacementId: string;
 }
 
 let _accountQueue: Queue<PurgeAccountJob> | null = null;
@@ -224,6 +237,25 @@ export async function enqueueCleanupRaw(
     removeOnFail: 100,
     attempts: 5,
     backoff: { type: 'exponential', delay: 10000 },
+  });
+}
+
+/**
+ * Enqueue the `supersede-cleanup` job (§6 Q2). Called by POST /montages/:id/replace
+ * AFTER the replacement is published + the prior is marked superseded — the worker
+ * hard-deletes the prior montage's content (S3 + row + cascade social + tombstone).
+ * Deterministic jobId so a replay can't double-schedule; the consumer is idempotent
+ * regardless. No delay — the prior render should be gone promptly on replacement.
+ */
+export async function enqueueSupersedeCleanup(
+  payload: SupersedeCleanupJob,
+): Promise<void> {
+  await montageQueue().add(SUPERSEDE_CLEANUP_JOB, payload, {
+    jobId: `supersede-${payload.priorMontageId}`,
+    removeOnComplete: true,
+    removeOnFail: 100,
+    attempts: 5,
+    backoff: { type: 'exponential', delay: 5000 },
   });
 }
 

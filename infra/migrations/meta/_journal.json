@@ -50,6 +50,13 @@
       "when": 1781856781725,
       "tag": "0006_loose_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781861216496,
+      "tag": "0007_empty_ares",
+      "breakpoints": true
     }
   ]
 }

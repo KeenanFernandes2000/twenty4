@@ -1,0 +1,1 @@
+CREATE INDEX "daily_media_item_expiry_idx" ON "daily_media_item" USING btree ("expiry_at") WHERE "daily_media_item"."expiry_at" is not null;

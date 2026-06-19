@@ -70,6 +70,7 @@ import {
   enqueueRenderMontage,
   enqueueExpireMontage,
   enqueueCleanupRaw,
+  enqueueSupersedeCleanup,
   removeExpireMontage,
 } from '../../queue/producers.js';
 
@@ -560,8 +561,9 @@ export const montageModule: FastifyPluginAsync = async (app) => {
       async () => {
         // Publish the replacement (same path as publish), then supersede the prior.
         const published = await publishMontageTx(replacement, sortedGroups);
-        // Mark the prior superseded (only if not already terminal). Full cascade
-        // delete (S3 + social) is Slice 7; here we mark + enqueue the cleanup.
+        // Mark the prior superseded (only if not already terminal). The prior's
+        // content is HARD-DELETED by the supersede-cleanup worker job enqueued below
+        // (S3 video+thumb + row + cascade reactions/comments/visibility + tombstone).
         await db
           .update(montages)
           .set({ status: 'deleted_by_user', supersededBy: published.id })
@@ -574,12 +576,17 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         // If the prior was already PUBLISHED, it has a pending +24h expire-montage
         // job that would fire on a montage that's now superseded (an orphan). Remove
         // it so expiry can't act on dead content. (cleanup-raw is keyed per user+day,
-        // not per montage — leave it; Slice 7's idempotent sweep is the backstop.)
+        // not per montage — leave it; the day's raw is purged by cleanup-raw/day-close.)
         if (prior.status === 'published') {
           await removeExpireMontage(prior.id);
         }
-        // TODO(slice 7): enqueue a supersede-cleanup job that hard-deletes the prior
-        // render's S3 objects + its reactions/comments + visibility rows + the row.
+        // §6 Q2 REPLACE CASCADE: hard-delete the prior render's content now that the
+        // replacement is live. Idempotency-guarded jobId + idempotent consumer, so a
+        // publish replay can't double-delete and a redelivery is safe.
+        await enqueueSupersedeCleanup({
+          priorMontageId: prior.id,
+          replacementId: published.id,
+        });
         return { status: 200, body: await toMontageResponse(published) };
       },
     );
