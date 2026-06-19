@@ -9,6 +9,7 @@ import { env } from './env.js';
 import { closeDb } from './db/index.js';
 import { closeRedis } from './redis/index.js';
 import { closeStorage } from './storage/s3.js';
+import { closeQueues } from './queue/producers.js';
 
 async function main(): Promise<void> {
   const app = await buildApp();
@@ -27,7 +28,7 @@ async function main(): Promise<void> {
 
     try {
       await app.close(); // stop accepting connections, run onClose hooks
-      await Promise.allSettled([closeRedis(), closeDb()]);
+      await Promise.allSettled([closeQueues(), closeRedis(), closeDb()]);
       closeStorage();
       app.log.info('shutdown complete');
       process.exit(0);

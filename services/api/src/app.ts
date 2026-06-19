@@ -16,6 +16,8 @@ import { ApiError, errors as apiErrors } from '@twenty4/contracts/errors';
 
 import { env } from './env.js';
 import { healthRoutes } from './routes/health.js';
+import { authModule } from './modules/auth/index.js';
+import { betterAuthHandler } from './auth/handler.js';
 import { usersModule } from './modules/users/index.js';
 import { groupsModule } from './modules/groups/index.js';
 import { mediaModule } from './modules/media/index.js';
@@ -111,6 +113,19 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // --- Health (unprefixed) ---
   await app.register(healthRoutes);
+
+  // --- Auth (Better Auth) ---
+  // The twenty4 façade routes (/auth/start|verify|refresh|logout|dev/last-otp)
+  // and Better Auth's own catch-all handler share the /auth prefix. They are
+  // registered in the SAME encapsulated context so the façade's exact-path routes
+  // take precedence over the handler's `/*` catch-all.
+  await app.register(
+    async (authScope) => {
+      await authScope.register(authModule);
+      await authScope.register(betterAuthHandler);
+    },
+    { prefix: '/auth' },
+  );
 
   // --- Resource modules (filled in later slices) ---
   await app.register(usersModule, { prefix: '/users' });

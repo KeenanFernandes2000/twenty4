@@ -38,8 +38,15 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   HOST: z.string().min(1).default('0.0.0.0'),
 
-  // --- Auth (Better Auth) — optional in Slice 0, required from Slice 3 ---
-  BETTER_AUTH_SECRET: z.string().min(1).optional(),
+  // --- Auth (Better Auth) ---
+  // Signing secret for sessions/tokens. Dev default keeps local/test bootable;
+  // production MUST override (a startup guard below rejects the dev default in prod).
+  BETTER_AUTH_SECRET: z
+    .string()
+    .min(1)
+    .default('dev-only-insecure-better-auth-secret-change-me'),
+  // Public base URL Better Auth uses to build its routes (mounted under /auth).
+  BETTER_AUTH_URL: z.string().url().default('http://127.0.0.1:4000'),
 
   // --- App behavior ---
   // 4am→4am day window: floor((utc − DAY_WINDOW_OFFSET_HOURS) in device tz).
@@ -60,6 +67,17 @@ function loadEnv(): Env {
     console.error(
       `\n[twenty4/api] Invalid environment configuration:\n${issues}\n\n` +
         `Fix the variables above (see .env.example) and restart.\n`,
+    );
+    process.exit(1);
+  }
+  // Refuse to boot in production with the insecure dev auth secret.
+  if (
+    parsed.data.NODE_ENV === 'production' &&
+    parsed.data.BETTER_AUTH_SECRET === 'dev-only-insecure-better-auth-secret-change-me'
+  ) {
+    // eslint-disable-next-line no-console
+    console.error(
+      '\n[twenty4/api] BETTER_AUTH_SECRET must be set to a real secret in production.\n',
     );
     process.exit(1);
   }

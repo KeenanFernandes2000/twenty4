@@ -12,6 +12,7 @@
  * // `better-auth generate` — NOT hand-written here.
  */
 export * from './users.js';
+export * from './auth.js'; // Better Auth session/account/verification (Slice 3)
 export * from './groups.js';
 export * from './media.js';
 export * from './montage.js';

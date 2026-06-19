@@ -14,3 +14,4 @@ export * from './EmptyState';
 export * from './ErrorRetry';
 export * from './ProgressBar';
 export * from './Sheet';
+export * from './OtpInput';

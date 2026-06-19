@@ -37,5 +37,15 @@ export const createdAt = () =>
     .notNull()
     .defaultNow();
 
+/**
+ * `updated_at timestamptz NOT NULL DEFAULT now()`, auto-bumped on update.
+ * Required by Better Auth's adapter on its managed models (user/session/...).
+ */
+export const updatedAt = () =>
+  timestamp('updated_at', { withTimezone: true, mode: 'date' })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date());
+
 /** Re-export so domain files can build partial-index `.where(...)` predicates. */
 export { sql };

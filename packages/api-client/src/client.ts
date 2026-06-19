@@ -15,6 +15,17 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type * as Contracts from "@twenty4/contracts";
 
+// Slice 3 (auth + users) DTOs — now pinned to the real contracts types.
+import type {
+  AuthStartRequest,
+  AuthStartResponse,
+  AuthVerifyRequest,
+  AuthRefreshRequest,
+  SessionTokens,
+  UpdateUserRequest,
+  MeResponse,
+} from "@twenty4/contracts/dto";
+
 // -----------------------------------------------------------------------------
 // Errors (typed; shape: { code, message, status })
 // -----------------------------------------------------------------------------
@@ -157,23 +168,28 @@ export function createApiClient(options: ApiClientOptions) {
     request,
 
     // --- auth -----------------------------------------------------------------
-    // Better Auth ops: /auth/start|verify|refresh|logout (§3).
+    // twenty4 façade over Better Auth: /auth/start|verify|refresh|logout (§3).
     auth: {
-      // TODO(slice 3): typed request/response from @twenty4/contracts/dto.
-      start: (input: unknown) => request<unknown>("/auth/start", { method: "POST", body: input }),
-      verify: (input: unknown) =>
-        request<unknown>("/auth/verify", { method: "POST", body: input }),
-      refresh: (input: unknown) =>
-        request<unknown>("/auth/refresh", { method: "POST", body: input }),
+      /** Begin email/phone OTP (or social entry). Returns a challengeId for verify. */
+      start: (input: AuthStartRequest) =>
+        request<AuthStartResponse>("/auth/start", { method: "POST", body: input }),
+      /** Submit the OTP → session tokens (accessToken is the bearer token). */
+      verify: (input: AuthVerifyRequest) =>
+        request<SessionTokens>("/auth/verify", { method: "POST", body: input }),
+      /** Re-validate the current session, returning fresh tokens. */
+      refresh: (input?: AuthRefreshRequest) =>
+        request<SessionTokens>("/auth/refresh", { method: "POST", body: input }),
+      /** Revoke the current session (204). */
       logout: () => request<void>("/auth/logout", { method: "POST" }),
     },
 
     // --- users ----------------------------------------------------------------
     users: {
-      // TODO(slice 3): me/profile DTOs.
-      me: () => request<unknown>("/users/me"),
-      updateMe: (input: unknown) =>
-        request<unknown>("/users/me", { method: "PATCH", body: input }),
+      /** The self profile (requires a session). */
+      me: () => request<MeResponse>("/users/me"),
+      /** Profile setup / edit (display_name, username, profile_photo_url). */
+      updateMe: (input: UpdateUserRequest) =>
+        request<MeResponse>("/users/me", { method: "PATCH", body: input }),
       // DELETE /users/me — revokes sessions then enqueues purge (5.6 / §5).
       deleteMe: () => request<void>("/users/me", { method: "DELETE" }),
     },
