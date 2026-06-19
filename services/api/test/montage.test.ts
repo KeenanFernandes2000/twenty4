@@ -318,9 +318,11 @@ describe('montage — generate → render → review → publish (live PG + redi
   let videoKey: string;
   let renderWallMs = 0;
 
+  let ownerMediaIds: string[];
+
   it('POST /montages creates a generating row + enqueues render-montage', async () => {
     // Seed several VALID items (photos + a video) for the owner today.
-    await seedValidMedia(owner.userId, dayBucket, [
+    ownerMediaIds = await seedValidMedia(owner.userId, dayBucket, [
       { type: 'photo', color: '0xff7a52' },
       { type: 'video', durationSec: 5 },
       { type: 'photo', color: '0x1fa572' },
@@ -331,7 +333,7 @@ describe('montage — generate → render → review → publish (live PG + redi
       method: 'POST',
       url: '/montages',
       headers: auth(owner),
-      payload: { mediaIds: [randomUUID()], theme: 'Party', musicId: 'house_120' },
+      payload: { mediaIds: ownerMediaIds, theme: 'Party', musicId: 'house_120' },
     });
     expect(res.statusCode).toBe(202);
     const body = res.json() as { montageId: string; status: string };
@@ -347,6 +349,8 @@ describe('montage — generate → render → review → publish (live PG + redi
     expect(row!.theme).toBe('Party');
     expect(row!.musicId).toBe('house_120');
     expect(row!.renderJobId).toBeTruthy();
+    // The selected media ids are persisted on the row (honored, not silently dropped).
+    expect([...(row!.sourceMediaIds ?? [])].sort()).toEqual([...ownerMediaIds].sort());
 
     // While generating, GET /montages/:id has no playback URL yet.
     const poll = await app.inject({
@@ -561,6 +565,196 @@ describe('montage — generate → render → review → publish (live PG + redi
     expect(after!.status).toBe('failed');
     expect(after!.renderError).toBeTruthy();
     expect(after!.videoPath).toBeNull();
+  });
+
+  /* ----------------- FIX 2: generate honors the mediaIds selection ---------- */
+
+  it('generate with a SUBSET of valid media renders only those (persisted + EDL)', async () => {
+    const u = await signUp('subset');
+    // Seed 4 valid items; select only 2 of them.
+    const all = await seedValidMedia(u.userId, dayBucket, [
+      { type: 'photo', color: '0xff0000' },
+      { type: 'photo', color: '0x00ff00' },
+      { type: 'photo', color: '0x0000ff' },
+      { type: 'photo', color: '0xffff00' },
+    ]);
+    const chosen = [all[0]!, all[2]!];
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/montages',
+      headers: auth(u),
+      payload: { mediaIds: chosen, theme: 'Chill', musicId: 'chill_90' },
+    });
+    expect(res.statusCode).toBe(202);
+    const mid = res.json().montageId as string;
+
+    // The persisted selection is EXACTLY the chosen subset (not all 4).
+    const [row] = await db.select().from(montages).where(eq(montages.id, mid)).limit(1);
+    expect([...(row!.sourceMediaIds ?? [])].sort()).toEqual([...chosen].sort());
+    expect(row!.sourceMediaIds!.length).toBe(2);
+
+    // Render it → the EDL only draws from the 2 selected sources (the mediaRefs the
+    // renderer used embed the daily_media_item id; assert none of the UNCHOSEN ids leak).
+    await drainMontageJobs(mid);
+    const result = await renderMontage(mid, true);
+    expect(result.status).toBe('draft_ready');
+    const [after] = await db.select().from(montages).where(eq(montages.id, mid)).limit(1);
+    const edl = after!.edl as { segments: Array<{ mediaRef: string }> };
+    const refs = new Set(edl.segments.map((s) => s.mediaRef));
+    const unchosen = [all[1]!, all[3]!];
+    for (const ref of refs) {
+      // Every segment's source must be one of the CHOSEN ids; never an unchosen one.
+      expect(chosen.some((id) => ref.includes(id))).toBe(true);
+      expect(unchosen.some((id) => ref.includes(id))).toBe(false);
+    }
+  }, 240_000);
+
+  it('generate with a mediaId that is NOT the caller’s valid-today media → 422', async () => {
+    const u = await signUp('badid');
+    const mine = await seedValidMedia(u.userId, dayBucket, [
+      { type: 'photo', color: '0x112233' },
+    ]);
+    // Mix a legit owned id with a foreign/unknown one → reject the whole request.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/montages',
+      headers: auth(u),
+      payload: { mediaIds: [mine[0]!, randomUUID()], theme: 'Party', musicId: 'house_120' },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe('validation');
+    // The bad id is named in the rejection (not silently dropped).
+    expect(res.json().error.details.rejected.length).toBe(1);
+    // Nothing was created.
+    const rows = await db.select().from(montages).where(eq(montages.userId, u.userId));
+    expect(rows.length).toBe(0);
+  });
+
+  /* ------------------- FIX 1: render-trigger rate limiting ------------------ */
+
+  it('rapid repeated POST /montages for one user → 429 after the render cap', async () => {
+    const u = await signUp('storm');
+    await seedValidMedia(u.userId, dayBucket, [{ type: 'photo', color: '0x445566' }]);
+    const mine = await db
+      .select()
+      .from(dailyMediaItems)
+      .where(eq(dailyMediaItems.userId, u.userId));
+    const ids = mine.map((m) => m.id);
+
+    // The per-user render cap is 10/10min. Fire 12 generate attempts. Each generate
+    // that wins flips to a generating row (one-active guard 409s the next), but EVERY
+    // attempt consumes the render-trigger budget — so the cap is hit regardless.
+    let got429 = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/montages',
+        headers: auth(u),
+        payload: { mediaIds: ids, theme: 'Party', musicId: 'house_120' },
+      });
+      if (res.statusCode === 429) {
+        got429 = true;
+        expect(res.json().error.code).toBe('rate_limited');
+        break;
+      }
+    }
+    expect(got429).toBe(true);
+  });
+
+  /* --------------- FIX 4: replace requires a draft_ready replacement -------- */
+
+  it('replace rejects an already-published replacement (must be draft_ready)', async () => {
+    // `montageId` is published (above). Build a SECOND published montage for owner on
+    // a DIFFERENT day so the active/one-per-day guards don't collide, then try to use
+    // it as a replacement — replace must reject a published replacement.
+    const otherDay = '2099-01-01';
+    const [pub2] = await db
+      .insert(montages)
+      .values({
+        userId: owner.userId,
+        dayBucket: otherDay,
+        status: 'published',
+        theme: 'Party',
+        musicId: 'house_120',
+        videoPath: 'x/y/z.mp4',
+        publishedAt: new Date(),
+        expiryAt: new Date(Date.now() + 24 * 3600 * 1000),
+      })
+      .returning();
+    // prior must share the replacement's day for the same-day check to pass first,
+    // so create a draft prior on otherDay too.
+    const [prior2] = await db
+      .insert(montages)
+      .values({
+        userId: owner.userId,
+        dayBucket: otherDay,
+        status: 'draft_ready',
+        theme: 'Party',
+        musicId: 'house_120',
+        videoPath: 'a/b/c.mp4',
+      })
+      .returning();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/montages/${prior2!.id}/replace`,
+      headers: auth(owner),
+      payload: { replacementMontageId: pub2!.id, groupIds: [groupA] },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('conflict');
+    // The prior was untouched (not superseded).
+    const [stillPrior] = await db
+      .select()
+      .from(montages)
+      .where(eq(montages.id, prior2!.id))
+      .limit(1);
+    expect(stillPrior!.status).toBe('draft_ready');
+  });
+
+  /* ---------- FIX 3: replace removes the prior published expire job --------- */
+
+  it('replace removes the prior published montage’s orphan expire job', async () => {
+    // `montageId` is already published (an expire-montage job was scheduled for it).
+    expect(await countJobs(EXPIRE_MONTAGE_JOB, montageId)).toBe(1);
+
+    // Build a fresh draft_ready replacement for owner on the SAME day as montageId.
+    const [repl] = await db
+      .insert(montages)
+      .values({
+        userId: owner.userId,
+        dayBucket,
+        status: 'draft_ready',
+        theme: 'Party',
+        musicId: 'house_120',
+        videoPath: 'repl/video.mp4',
+        thumbnailPath: 'repl/thumb.jpg',
+        durationMs: 30000,
+      })
+      .returning();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/montages/${montageId}/replace`,
+      headers: auth(owner),
+      payload: { replacementMontageId: repl!.id, groupIds: [groupA] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('published');
+
+    // The prior's expire-montage orphan was removed; the replacement has its own.
+    expect(await countJobs(EXPIRE_MONTAGE_JOB, montageId)).toBe(0);
+    expect(await countJobs(EXPIRE_MONTAGE_JOB, repl!.id)).toBe(1);
+
+    // Prior is superseded by the replacement.
+    const [priorAfter] = await db
+      .select()
+      .from(montages)
+      .where(eq(montages.id, montageId))
+      .limit(1);
+    expect(priorAfter!.status).toBe('deleted_by_user');
+    expect(priorAfter!.supersededBy).toBe(repl!.id);
   });
 
   /* ------------------------------- unauth ---------------------------------- */

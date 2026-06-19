@@ -64,10 +64,12 @@ import { db } from '../../db/index.js';
 import { env } from '../../env.js';
 import { buckets, presignGet } from '../../storage/s3.js';
 import { withIdempotency, hashBody } from '../../lib/idempotency.js';
+import { throttleRenderTrigger } from '../../lib/rateLimit.js';
 import {
   enqueueRenderMontage,
   enqueueExpireMontage,
   enqueueCleanupRaw,
+  removeExpireMontage,
 } from '../../queue/producers.js';
 
 /** Default theme/music when the client doesn't pick (review screen defaults). */
@@ -171,6 +173,45 @@ async function countValidMedia(userId: string, dayBucket: string): Promise<numbe
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * Validate a caller's SELECTED media ids and return them deduped. EVERY submitted
+ * id must be the caller's OWN, `validation_status='valid'`, in TODAY's day bucket,
+ * and not deleted — otherwise we reject 422 (never silently drop a bad id). Returns
+ * the deduped, validated id list (preserving the caller's order) to persist on the
+ * montage so the render job uses EXACTLY this selection.
+ */
+async function resolveSelectedMedia(
+  userId: string,
+  dayBucket: string,
+  mediaIds: string[],
+): Promise<string[]> {
+  // Dedupe (a caller can't smuggle duplicates) while preserving first-seen order.
+  const wanted = [...new Set(mediaIds)];
+
+  // The set of submitted ids that ARE the caller's valid, today, not-deleted media.
+  const rows = (await db.execute(sql`
+    select id::text as id
+    from daily_media_item
+    where user_id = ${userId}
+      and day_bucket = ${dayBucket}
+      and validation_status = 'valid'
+      and processing_status <> 'deleted'
+      and id in (${sql.join(wanted.map((id) => sql`${id}`), sql`, `)})
+  `)) as unknown as Array<{ id: string }>;
+  const eligible = new Set(rows.map((r) => r.id));
+
+  const rejected = wanted.filter((id) => !eligible.has(id));
+  if (rejected.length > 0) {
+    // Reject loudly — a selected id that isn't owned/valid/today/live must NOT be
+    // silently dropped (the user would get a montage missing what they picked).
+    throw errors.validation(
+      'one or more selected media items are not your own valid media for today',
+      { rejected },
+    );
+  }
+  return wanted;
+}
+
 /** Validate a music id against the bundled registry (reject unknown loudly). */
 function assertKnownMusic(musicId: string): void {
   if (!TRACKS[musicId]) {
@@ -210,6 +251,10 @@ export const montageModule: FastifyPluginAsync = async (app) => {
     const body = generateMontageRequestSchema.parse(req.body);
     assertKnownMusic(body.musicId);
 
+    // Render-storm guard: cap render triggers per user BEFORE any expensive work or
+    // enqueue (renders are scarce — worker concurrency 1, ~25-30s each). 429 over cap.
+    await throttleRenderTrigger({ userId: me.id });
+
     const dayBucket = resolveTzBucket(req);
 
     // Gate on the caller's VALID media for TODAY (server-authoritative count). The
@@ -221,6 +266,11 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         required: env.MONTAGE_MIN_VALID_MEDIA,
       });
     }
+
+    // Honor the caller's SELECTION: every submitted id must be their own valid,
+    // today's, not-deleted media (reject 422 on any bad id — never silently drop).
+    // The validated set is persisted on the row so the render job uses EXACTLY it.
+    const selectedMediaIds = await resolveSelectedMedia(me.id, dayBucket, body.mediaIds);
 
     // One active (generating/draft_ready) montage per (user, day_bucket): a 2nd
     // generate while one is in flight is a conflict (regenerate/replace instead).
@@ -250,6 +300,7 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         status: 'generating',
         theme: body.theme,
         musicId: body.musicId,
+        sourceMediaIds: selectedMediaIds,
       })
       .returning();
     if (!row) throw errors.internal('failed to create montage');
@@ -297,6 +348,9 @@ export const montageModule: FastifyPluginAsync = async (app) => {
     const body = regenerateMontageRequestSchema.parse(req.body);
     if (body.musicId) assertKnownMusic(body.musicId);
 
+    // Render-storm guard: cap render triggers per user BEFORE any work or enqueue.
+    await throttleRenderTrigger({ userId: me.id });
+
     const row = await loadOwnedOr404(id, me.id);
 
     if (row.status !== 'draft_ready' && row.status !== 'failed') {
@@ -304,6 +358,13 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         status: row.status,
       });
     }
+
+    // If the caller re-picks a selection, re-validate it (own/valid/today/live) and
+    // persist the new set; otherwise the existing persisted selection is reused as-is
+    // so a regenerate stays consistent with what was originally chosen.
+    const newSelection = body.mediaIds
+      ? await resolveSelectedMedia(me.id, row.dayBucket, body.mediaIds)
+      : undefined;
 
     // Conditional reset: only flip a row that's still draft_ready/failed (guards a
     // concurrent publish from racing the regenerate). The predicate means exactly
@@ -314,6 +375,7 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         status: 'generating',
         ...(body.theme ? { theme: body.theme } : {}),
         ...(body.musicId ? { musicId: body.musicId } : {}),
+        ...(newSelection ? { sourceMediaIds: newSelection } : {}),
         // Clear stale render outputs so a failed/old draft can't be served mid-render.
         videoPath: null,
         thumbnailPath: null,
@@ -410,6 +472,10 @@ export const montageModule: FastifyPluginAsync = async (app) => {
     const me = req.user!;
     const body = replaceMontageRequestSchema.parse(req.body);
 
+    // Render-storm guard: replace publishes a fresh render, so it's a render-
+    // triggering action — cap it per user too (BEFORE the publish work / enqueues).
+    await throttleRenderTrigger({ userId: me.id });
+
     const prior = await loadOwnedOr404(id, me.id);
     const replacement = await loadOwnedOr404(body.replacementMontageId, me.id);
 
@@ -424,8 +490,12 @@ export const montageModule: FastifyPluginAsync = async (app) => {
         replacementDay: replacement.dayBucket,
       });
     }
-    if (replacement.status !== 'draft_ready' && replacement.status !== 'published') {
-      throw errors.conflict('replacement montage is not ready to publish', {
+    // The replacement must be a FRESH, reviewed-but-unpublished render (draft_ready),
+    // not an already-published montage. Accepting a published replacement would
+    // re-publish live content (resetting visibility/clocks) and muddy "which render is
+    // live" — reject it so replace only ever promotes a draft into the prior's slot.
+    if (replacement.status !== 'draft_ready') {
+      throw errors.conflict('replacement montage must be a draft ready to publish', {
         status: replacement.status,
       });
     }
@@ -465,6 +535,13 @@ export const montageModule: FastifyPluginAsync = async (app) => {
               ne(montages.status, 'deleted_by_user'),
             ),
           );
+        // If the prior was already PUBLISHED, it has a pending +24h expire-montage
+        // job that would fire on a montage that's now superseded (an orphan). Remove
+        // it so expiry can't act on dead content. (cleanup-raw is keyed per user+day,
+        // not per montage — leave it; Slice 7's idempotent sweep is the backstop.)
+        if (prior.status === 'published') {
+          await removeExpireMontage(prior.id);
+        }
         // TODO(slice 7): enqueue a supersede-cleanup job that hard-deletes the prior
         // render's S3 objects + its reactions/comments + visibility rows + the row.
         return { status: 200, body: await toMontageResponse(published) };

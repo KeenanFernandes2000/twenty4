@@ -1,0 +1,1 @@
+ALTER TABLE "montage" ADD COLUMN "source_media_ids" uuid[];

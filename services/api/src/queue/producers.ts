@@ -192,6 +192,22 @@ export async function enqueueExpireMontage(
 }
 
 /**
+ * Remove a previously-scheduled `expire-montage` job by its deterministic jobId
+ * (see `enqueueExpireMontage`). Used on REPLACE: when a prior published montage is
+ * superseded, its pending +24h expiry job would otherwise still fire on a montage
+ * that's already gone (an orphan). Best-effort + idempotent — a missing job (never
+ * scheduled, already fired, or already removed) is a no-op.
+ */
+export async function removeExpireMontage(montageId: string): Promise<void> {
+  try {
+    const job = await montageQueue().getJob(`expire-${montageId}`);
+    if (job) await job.remove();
+  } catch {
+    // Slice 7's idempotent expiry sweep is the backstop if removal fails here.
+  }
+}
+
+/**
  * Schedule the delayed `cleanup-raw` job at +60min (§6 Q5 — raw purge after
  * publish). CONSUMER is Slice 7. // TODO(slice 7): consume `cleanup-raw` →
  * hard-delete ALL raw (used + unused) + draft renders for (user, day_bucket).

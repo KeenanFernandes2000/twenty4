@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { dailyMediaItems, montages, type Montage } from '@twenty4/contracts/db';
 import { getTrack, TRACK_IDS } from '@twenty4/remotion/tracks';
 
@@ -96,22 +96,33 @@ export async function renderMontage(
   let uploadedThumb = false;
 
   try {
-    // ---- 2. load VALID media for this montage's day_bucket -----------------
-    const mediaRows = await db
-      .select()
-      .from(dailyMediaItems)
-      .where(
-        and(
-          eq(dailyMediaItems.userId, row.userId),
-          eq(dailyMediaItems.dayBucket, row.dayBucket),
-          eq(dailyMediaItems.validationStatus, 'valid'),
-        ),
-      )
-      .orderBy(dailyMediaItems.createdAt);
+    // ---- 2. load the montage's SELECTED media for its day_bucket -----------
+    // Honor the user's curation: render EXACTLY the ids they selected at generate
+    // time (montage.source_media_ids), NOT the whole day's valid pool. We still
+    // re-filter by owner + valid + not-deleted in SQL (and day_bucket is implied by
+    // the montage's own day) as a safety net — a since-invalidated/deleted/foreign
+    // id is dropped here rather than ever being smuggled into a render.
+    const selectedIds = row.sourceMediaIds ?? [];
+    const mediaRows = selectedIds.length
+      ? await db
+          .select()
+          .from(dailyMediaItems)
+          .where(
+            and(
+              eq(dailyMediaItems.userId, row.userId),
+              eq(dailyMediaItems.dayBucket, row.dayBucket),
+              eq(dailyMediaItems.validationStatus, 'valid'),
+              inArray(dailyMediaItems.id, selectedIds),
+            ),
+          )
+          .orderBy(dailyMediaItems.createdAt)
+      : [];
 
     const usable = mediaRows.filter((m) => m.processingStatus !== 'deleted');
     if (usable.length === 0) {
-      throw new Error('no valid media to render');
+      // Either nothing was selected (legacy/empty row) or every selected id is no
+      // longer valid/live — there's nothing legitimate to render.
+      throw new Error('no valid selected media to render');
     }
 
     // ---- 3. download each raw object to a temp dir -------------------------

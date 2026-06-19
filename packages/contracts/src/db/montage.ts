@@ -6,7 +6,16 @@
  * Implemented with Drizzle `.where(sql\`...\`)` on the index.
  */
 import { sql } from 'drizzle-orm';
-import { date, index, integer, jsonb, pgTable, primaryKey, text, uuid } from 'drizzle-orm/pg-core';
+import {
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { montageStatusEnum, themeEnum } from '../enums.js';
 import type { Edl } from '../edl.js';
 import { createdAt, tsTz, uuidPk } from './_shared.js';
@@ -29,6 +38,15 @@ export const montages = pgTable(
     /** Resolved theme (concrete, not `Random`). */
     theme: themeEnum('theme'),
     musicId: text('music_id'),
+    /**
+     * The EXACT daily_media_item ids the user selected at generate time (§2.5
+     * review-screen selection). The render job loads PRECISELY these (re-filtered
+     * by owner+valid+today+not-deleted as a safety net) instead of ALL the day's
+     * valid media — honoring the user's curation. Persisted on the row so a later
+     * regenerate stays consistent with the original selection. Null only on legacy
+     * rows / a row created before a selection was recorded.
+     */
+    sourceMediaIds: uuid('source_media_ids').array(),
     renderJobId: text('render_job_id'),
     /** The EDL the intelligence emitted & the renderer consumed (jsonb). */
     edl: jsonb('edl').$type<Edl>(),

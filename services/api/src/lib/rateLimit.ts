@@ -353,3 +353,45 @@ export async function throttleMediaInit(args: { userId: string }): Promise<void>
     });
   }
 }
+
+/* ------------------------------ montage limits ----------------------------- */
+
+/**
+ * Render-trigger cap (§7.3 / §8 "rate limits"). A montage render is EXPENSIVE
+ * (headless Chrome + ffmpeg, ~25-30s, worker concurrency=1) — every render-
+ * triggering call (generate / regenerate / replace) competes for that single
+ * renderer. Without a throttle a user can enqueue an unbounded burst of renders
+ * (a "render storm" / resource-exhaustion DoS) by hammering regenerate/replace.
+ *
+ * The one-active-montage-per-day guard already caps CONCURRENT generates, but it
+ * does NOT cap the regenerate/replace CHURN (each flips the row back to generating
+ * and enqueues a fresh render). This is the per-user burst limiter for that churn.
+ *
+ * Fails CLOSED (unlike the upload/invite limiters): this guards a real, scarce
+ * compute resource, so a Redis blip must NOT open the floodgates to render-storm.
+ * A 10/10min cap leaves ample room for legitimate "generate then tweak a couple
+ * times" review loops while making a storm impossible.
+ */
+export const RENDER_TRIGGER_BUCKET = 'montage:render:user';
+export const RENDER_TRIGGER_MAX = 10; // ≤10 render triggers per window.
+export const RENDER_TRIGGER_WINDOW = 600; // per 10 min.
+
+/**
+ * Throttle a render-triggering action (generate / regenerate / replace) per user.
+ * Call BEFORE enqueueing the render. Throws 429 rate_limited over the cap. Fails
+ * CLOSED (a real compute resource — don't let a Redis outage open render-storm).
+ */
+export async function throttleRenderTrigger(args: { userId: string }): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: RENDER_TRIGGER_BUCKET,
+    subject: args.userId,
+    max: RENDER_TRIGGER_MAX,
+    windowSeconds: RENDER_TRIGGER_WINDOW,
+    failClosed: true,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many montage renders; slow down', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}
