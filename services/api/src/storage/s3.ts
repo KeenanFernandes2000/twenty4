@@ -23,6 +23,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -270,6 +271,51 @@ export async function deleteObject(
   } catch {
     return false;
   }
+}
+
+/** Object count + total bytes for a bucket (Slice 8 admin ops storage usage). */
+export interface BucketUsageStats {
+  bucket: BucketName;
+  objectCount: number;
+  bytes: number;
+}
+
+/**
+ * Sum object count + bytes across a bucket via paginated ListObjectsV2. Used by
+ * `GET /admin/ops` to surface per-bucket storage usage. Bounded by `maxPages` so a
+ * pathological bucket can't make the ops call run unbounded; best-effort (a list
+ * error yields zeros). Fine for the Phase-1 admin shell scale; a metrics export is
+ * the production path. The bucket name is allow-list-checked.
+ */
+export async function bucketUsage(
+  bucket: BucketName,
+  maxPages = 50,
+): Promise<BucketUsageStats> {
+  assertBucket(bucket);
+  let objectCount = 0;
+  let bytes = 0;
+  let token: string | undefined;
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const res = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          ContinuationToken: token,
+          MaxKeys: 1000,
+        }),
+      );
+      for (const obj of res.Contents ?? []) {
+        objectCount++;
+        bytes += obj.Size ?? 0;
+      }
+      if (!res.IsTruncated) break;
+      token = res.NextContinuationToken;
+      if (!token) break;
+    }
+  } catch {
+    // best-effort — return whatever was counted so far.
+  }
+  return { bucket, objectCount, bytes };
 }
 
 /** Liveness probe for storage — HeadBucket on the raw bucket. */

@@ -259,6 +259,55 @@ export async function enqueueSupersedeCleanup(
   });
 }
 
+/* ------------------------------ ops / metrics ------------------------------ */
+
+/** Per-queue BullMQ job-state counts (Slice 8 admin ops). */
+export interface QueueJobCounts {
+  name: string;
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+}
+
+/**
+ * Read job-state counts for every known queue (account / media / montage). Used by
+ * `GET /admin/ops` to surface failed-job counts per queue (and the rest). Opens a
+ * short-lived Queue per name so it never touches the lazily-constructed producer
+ * singletons; each is closed before returning. Best-effort: a Redis error on one
+ * queue yields zeros for that queue rather than failing the whole ops call.
+ */
+export async function getQueueCounts(): Promise<QueueJobCounts[]> {
+  const names = [ACCOUNT_QUEUE, MEDIA_QUEUE, MONTAGE_QUEUE];
+  const out: QueueJobCounts[] = [];
+  for (const name of names) {
+    const q = new Queue(name, { connection: redisConnection() });
+    try {
+      const counts = await q.getJobCounts(
+        'waiting',
+        'active',
+        'completed',
+        'failed',
+        'delayed',
+      );
+      out.push({
+        name,
+        waiting: counts.waiting ?? 0,
+        active: counts.active ?? 0,
+        completed: counts.completed ?? 0,
+        failed: counts.failed ?? 0,
+        delayed: counts.delayed ?? 0,
+      });
+    } catch {
+      out.push({ name, waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 });
+    } finally {
+      await q.close().catch(() => undefined);
+    }
+  }
+  return out;
+}
+
 /** Close the queue connection (graceful shutdown). */
 export async function closeQueues(): Promise<void> {
   if (_accountQueue) {

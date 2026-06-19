@@ -48,6 +48,14 @@ export const users = pgTable(
     /** DB default lets Better Auth insert the row pre-profile; refined per flow. */
     authProvider: authProviderEnum('auth_provider').notNull().default('email'),
     accountStatus: accountStatusEnum('account_status').notNull().default('active'),
+    /**
+     * Moderation/ops admin flag (Slice 8). Seeded from the `ADMIN_EMAILS`
+     * allowlist on sign-in (and settable by a one-off seed). The `requireAdmin`
+     * preHandler gates every `/admin/*` route on a valid session AND this flag;
+     * a non-admin session is 403'd (and the attempt audited). NOT user-settable
+     * through any public endpoint.
+     */
+    isAdmin: boolean('is_admin').notNull().default(false),
     /** Per-type notification toggles + per-group mutes + reminder time (PLAN 5.4). */
     notificationPrefs: jsonb('notification_prefs').notNull().default(sql`'{}'::jsonb`),
     privacySettings: jsonb('privacy_settings').notNull().default(sql`'{}'::jsonb`),

@@ -157,7 +157,11 @@ export const auth = betterAuth({
         // façade translates the encoded code into the precise contract error.
         before: async (session) => {
           const [user] = await db
-            .select({ accountStatus: schema.users.accountStatus })
+            .select({
+              accountStatus: schema.users.accountStatus,
+              email: schema.users.email,
+              isAdmin: schema.users.isAdmin,
+            })
             .from(schema.users)
             .where(eq(schema.users.id, session.userId))
             .limit(1);
@@ -166,6 +170,20 @@ export const auth = betterAuth({
               message: `account ${user.accountStatus}`,
               code: `ACCOUNT_${user.accountStatus.toUpperCase()}`,
             });
+          }
+          // Seed `is_admin` from the ADMIN_EMAILS allowlist on sign-in (Slice 8).
+          // A user whose verified email is on the allowlist is promoted; one no
+          // longer on it is demoted — so the allowlist is the single source of
+          // truth and revoking admin is just removing the email + re-signing-in.
+          if (user) {
+            const onList =
+              !!user.email && env.ADMIN_EMAILS.includes(user.email.toLowerCase());
+            if (onList !== user.isAdmin) {
+              await db
+                .update(schema.users)
+                .set({ isAdmin: onList })
+                .where(eq(schema.users.id, session.userId));
+            }
           }
         },
       },

@@ -25,7 +25,7 @@ import { mediaModule } from './modules/media/index.js';
 import { montageModule } from './modules/montage/index.js';
 import { feedModule } from './modules/feed/index.js';
 import { socialModule, commentsModule } from './modules/social/index.js';
-import { safetyModule } from './modules/safety/index.js';
+import { reportsModule, blocksModule } from './modules/safety/index.js';
 import { adminModule } from './modules/admin/index.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -148,7 +148,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(socialModule, { prefix: '/montages' });
   await app.register(commentsModule, { prefix: '/comments' });
   await app.register(feedModule, { prefix: '/feed' });
-  await app.register(safetyModule, { prefix: '/safety' });
+  // Safety (§8): reports + blocks live at the ROOT resource paths per spec
+  // (POST /reports · POST /blocks · DELETE /blocks/:userId · GET /blocks).
+  await app.register(reportsModule, { prefix: '/reports' });
+  await app.register(blocksModule, { prefix: '/blocks' });
   await app.register(adminModule, { prefix: '/admin' });
 
   return app;

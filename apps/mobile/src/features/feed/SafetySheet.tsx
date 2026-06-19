@@ -1,14 +1,15 @@
 /**
  * SafetySheet — the report (6.1) / block (6.2) entry points for a feed card or
  * the player. Opened from the card "⋯" overflow menu; presents:
- *   - Report this recap  → a reason picker that calls the (stubbed) safety.report
- *     api method. The real /reports + /blocks endpoints land in Slice 8; the UI
- *     affordance + the call site exist now so wiring them is a one-line swap.
- *   - Block @user        → confirms, then calls safety.block(userId).
+ *   - Report this recap  → a reason picker that calls POST /reports. A repeat
+ *     OPEN report dedups server-side (returns the existing report); either way
+ *     we toast "Thanks — our team will review this."
+ *   - Block @user        → confirms, then POST /blocks. Takes effect immediately:
+ *     the feed + every social action already filter BOTH directions (Slice 6), and
+ *     useBlockUser invalidates the feed so the author drops out at once.
  *   - Delete (owner)     → owner-only hard-delete of their own recap.
  *
- * Web-safe (RN Modal-based Sheet). Mutations are best-effort: on success we toast
- * via the parent's onDone; the safety methods currently return TODO(slice 8).
+ * Web-safe (RN Modal-based Sheet). Mutations toast via the parent's onDone.
  */
 import { useState } from 'react';
 import { Text, View } from 'react-native';
@@ -17,13 +18,18 @@ import { useTheme } from '../../theme';
 import { Button, Icon, ListRow, Sheet } from '../../ui';
 import type { ReportReason } from '@twenty4/contracts/enums';
 import { apiClient } from '../../lib/apiClient';
+import { useBlockUser, useReport } from '../../lib/safety';
 
+/** Reason set mirrors the contracts `REPORT_REASONS` enum (analytics-stable). */
 const REASONS: Array<{ value: ReportReason; label: string }> = [
   { value: 'harassment', label: 'Harassment or bullying' },
   { value: 'nudity', label: 'Nudity or sexual content' },
-  { value: 'hate', label: 'Hate speech' },
+  { value: 'hate', label: 'Hate speech or symbols' },
   { value: 'violence', label: 'Violence or threats' },
-  { value: 'spam', label: 'Spam' },
+  { value: 'self_harm', label: 'Self-harm or suicide' },
+  { value: 'illegal', label: 'Illegal goods or activity' },
+  { value: 'impersonation', label: 'Impersonation' },
+  { value: 'spam', label: 'Spam or scam' },
   { value: 'other', label: 'Something else' },
 ];
 
@@ -40,7 +46,7 @@ export interface SafetySheetProps {
   onDone?: (message: string) => void;
 }
 
-type View_ = 'menu' | 'report' | 'block';
+type SheetView = 'menu' | 'report' | 'block';
 
 export function SafetySheet({
   visible,
@@ -54,8 +60,11 @@ export function SafetySheet({
 }: SafetySheetProps) {
   const theme = useTheme();
   const c = theme.colors;
-  const [view, setView] = useState<View_>('menu');
+  const [view, setView] = useState<SheetView>('menu');
   const [busy, setBusy] = useState(false);
+
+  const report = useReport();
+  const block = useBlockUser();
 
   const reset = () => {
     setView('menu');
@@ -67,30 +76,32 @@ export function SafetySheet({
   };
 
   const submitReport = async (reason: ReportReason) => {
+    if (busy) return;
     setBusy(true);
     try {
-      // TODO(slice 8): real /reports DTO; method is stubbed in the api-client.
-      await apiClient.safety.report({ targetType: 'montage', targetId: montageId, reason });
+      await report.mutateAsync({ targetType: 'montage', targetId: montageId, reason });
     } catch {
-      // Swallow until the endpoint exists; the UI affordance is what matters now.
+      // Best-effort: still acknowledge so the user isn't stuck (e.g. a duplicate
+      // already-open report dedups to 200; a transient error shouldn't trap them).
     }
     onDone?.('Thanks — our team will review this.');
     close();
   };
 
   const confirmBlock = async () => {
+    if (busy) return;
     setBusy(true);
     try {
-      // TODO(slice 8): real /blocks/:userId endpoint.
-      await apiClient.safety.block(authorId);
+      await block.mutateAsync(authorId);
+      onDone?.(`You blocked ${authorName}.`);
     } catch {
-      // Swallow until the endpoint exists.
+      onDone?.("Couldn't block right now. Please try again.");
     }
-    onDone?.(`You blocked ${authorName}.`);
     close();
   };
 
   const confirmDelete = async () => {
+    if (busy) return;
     setBusy(true);
     try {
       await apiClient.montage.remove(montageId);
@@ -144,6 +155,16 @@ export function SafetySheet({
 
       {view === 'report' ? (
         <View style={{ marginHorizontal: -theme.spacing.lg }}>
+          <Text
+            style={{
+              ...theme.typography.caption,
+              color: c.muted,
+              paddingHorizontal: theme.spacing.lg,
+              paddingBottom: theme.spacing.xs,
+            }}
+          >
+            Why are you reporting this? Your report is anonymous.
+          </Text>
           {REASONS.map((r) => (
             <ListRow
               key={r.value}
@@ -161,7 +182,7 @@ export function SafetySheet({
             <Icon name="information-circle-outline" size={20} color={c.muted} />
             <Text style={{ ...theme.typography.body, color: c.text2, flex: 1 }}>
               {authorName} won't be able to see your recaps, and you won't see theirs. You can undo
-              this later in Settings.
+              this anytime from Settings → Blocked.
             </Text>
           </View>
           <Button

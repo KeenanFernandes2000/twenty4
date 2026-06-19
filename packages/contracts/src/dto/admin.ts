@@ -78,15 +78,46 @@ export type AdminReport = z.infer<typeof adminReportSchema>;
 export const adminReportListResponseSchema = pageSchema(adminReportSchema);
 export type AdminReportListResponse = z.infer<typeof adminReportListResponseSchema>;
 
-/** Action a report (resolve + optional content removal). */
+/**
+ * Action a report (§8 review reports). The `action` chooses the moderation
+ * outcome; `dismiss` closes with no effect, the others close the report AND
+ * apply the side-effect to the target (remove the reported content, or
+ * suspend/ban the target/owner). `note` is a content-free admin note.
+ */
+export const REPORT_RESOLVE_ACTIONS = [
+  'dismiss',
+  'remove_content',
+  'suspend_user',
+  'ban_user',
+] as const;
+export const reportResolveActionSchema = z.enum(REPORT_RESOLVE_ACTIONS);
+export type ReportResolveAction = z.infer<typeof reportResolveActionSchema>;
+
 export const adminResolveReportRequestSchema = z
   .object({
-    resolution: z.enum(['actioned', 'dismissed']),
-    removeContent: z.boolean().default(false),
+    action: reportResolveActionSchema,
     note: z.string().max(500).optional(),
   })
   .strict();
 export type AdminResolveReportRequest = z.infer<typeof adminResolveReportRequestSchema>;
+
+/** Response after resolving a report. */
+export const adminResolveReportResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    status: reportStatusSchema,
+    action: reportResolveActionSchema,
+    /** Whether the reported content was removed as part of this resolution. */
+    contentRemoved: z.boolean(),
+  })
+  .strict();
+export type AdminResolveReportResponse = z.infer<typeof adminResolveReportResponseSchema>;
+
+/** Remove a montage / comment as an admin (§8 remove content). */
+export const adminRemoveContentRequestSchema = z
+  .object({ reason: z.string().max(500).optional() })
+  .strict();
+export type AdminRemoveContentRequest = z.infer<typeof adminRemoveContentRequestSchema>;
 
 /* ----------------------------- ops / metrics ------------------------------- */
 export const adminJobStatusQuerySchema = cursorPaginationSchema.extend({
@@ -114,3 +145,45 @@ export const adminGrowthMetricsResponseSchema = z
   })
   .strict();
 export type AdminGrowthMetricsResponse = z.infer<typeof adminGrowthMetricsResponseSchema>;
+
+/**
+ * Consolidated ops dashboard (§8 / PLAN slice 8 `GET /admin/ops`): per-queue
+ * BullMQ job-state counts (esp. failed), per-bucket S3 storage usage, and basic
+ * growth/health metrics. All counts only — no content.
+ */
+export const queueCountsSchema = z
+  .object({
+    name: z.string(),
+    waiting: z.number().int().min(0),
+    active: z.number().int().min(0),
+    completed: z.number().int().min(0),
+    failed: z.number().int().min(0),
+    delayed: z.number().int().min(0),
+  })
+  .strict();
+export type QueueCounts = z.infer<typeof queueCountsSchema>;
+
+export const bucketUsageSchema = z
+  .object({
+    bucket: z.string(),
+    objectCount: z.number().int().min(0),
+    bytes: z.number().int().min(0),
+  })
+  .strict();
+export type BucketUsage = z.infer<typeof bucketUsageSchema>;
+
+export const adminOpsResponseSchema = z
+  .object({
+    queues: z.array(queueCountsSchema),
+    storage: z.array(bucketUsageSchema),
+    metrics: z
+      .object({
+        publishedMontages: z.number().int().min(0),
+        activeUsers: z.number().int().min(0),
+        expiredMontages: z.number().int().min(0),
+        openReports: z.number().int().min(0),
+      })
+      .strict(),
+  })
+  .strict();
+export type AdminOpsResponse = z.infer<typeof adminOpsResponseSchema>;

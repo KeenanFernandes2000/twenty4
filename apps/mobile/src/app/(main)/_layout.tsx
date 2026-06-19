@@ -59,6 +59,9 @@ export default function MainLayout() {
         name="profile"
         options={{
           title: 'Profile',
+          // The profile tab is its own Stack (profile/_layout) — index, blocked,
+          // delete-account; hide the tab-level header to avoid a double bar.
+          headerShown: false,
           tabBarIcon: ({ color, size }) => <Ionicons name="person-outline" color={color} size={size} />,
         }}
       />

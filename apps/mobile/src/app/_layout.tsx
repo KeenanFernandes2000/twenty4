@@ -23,6 +23,8 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider, useAppFonts, useTheme } from '../theme';
 import { queryClient } from '../lib/queryClient';
 import { useAuthStore } from '../stores/authStore';
+import { useSuspensionStore } from '../stores/suspensionStore';
+import { SuspendedScreen } from '../features/safety/SuspendedScreen';
 
 /**
  * Drives navigation from auth state. Rendered inside the providers so it can
@@ -36,6 +38,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const status = useAuthStore((s) => s.status);
   const needsProfile = useAuthStore((s) => s.needsProfile);
   const hydrate = useAuthStore((s) => s.hydrate);
+  const suspended = useSuspensionStore((s) => s.suspended);
+
+  // `segments` is a typed tuple under typedRoutes; widen for inspection.
+  const onGallery = (segments as string[])[0] === 'gallery';
 
   // Hydrate the persisted token exactly once on mount.
   useEffect(() => {
@@ -82,6 +88,13 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   // Hold a blank themed canvas until we know where to send the user.
   if (status === 'loading') {
     return <View style={{ flex: 1, backgroundColor: theme.colors.bg }} />;
+  }
+
+  // 7.5 Suspended gate: a signed-in account flagged `suspended` is blocked from
+  // the app — render the global Suspended screen instead of the tabs. The
+  // design-system /gallery route stays reachable for review.
+  if (suspended && status === 'signedIn' && !onGallery) {
+    return <SuspendedScreen />;
   }
 
   return <>{children}</>;

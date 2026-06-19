@@ -48,6 +48,20 @@ const envSchema = z.object({
   // Public base URL Better Auth uses to build its routes (mounted under /auth).
   BETTER_AUTH_URL: z.string().url().default('http://127.0.0.1:4000'),
 
+  // --- Admin (Slice 8 moderation/ops) ---
+  // Comma-separated allowlist of admin emails. On sign-in, a user whose email is
+  // in this list is promoted to `is_admin` (seeded), gating the /admin/* surface.
+  // Empty by default → no admins until configured (least privilege).
+  ADMIN_EMAILS: z
+    .string()
+    .default('')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.length > 0),
+    ),
+
   // --- App behavior ---
   // 4am→4am day window: floor((utc − DAY_WINDOW_OFFSET_HOURS) in device tz).
   DAY_WINDOW_OFFSET_HOURS: z.coerce.number().int().min(0).max(23).default(4),

@@ -240,10 +240,15 @@ export const AUDIT_ACTIONS = [
   'raw_media_purged',
   'account_suspended',
   'account_banned',
+  'account_reinstated',
   'account_deleted',
+  'report_created',
   'report_actioned',
   'report_dismissed',
+  'report_snapshot_purged',
   'content_removed',
+  'comment_removed_by_admin',
+  'admin_access_denied', // a non-admin session hit an /admin/* route (audited)
   'cleanup_job_run',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);

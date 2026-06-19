@@ -64,6 +64,13 @@
       "when": 1781862405105,
       "tag": "0008_slice7_deletion_backstop",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781863578020,
+      "tag": "0009_slice8_safety_admin",
+      "breakpoints": true
     }
   ]
 }

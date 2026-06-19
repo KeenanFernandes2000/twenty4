@@ -72,6 +72,19 @@ import type {
   CommentsResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 8 (safety + admin: reports/blocks + moderation/ops) DTOs.
+import type {
+  CreateReportRequest,
+  ReportResponse,
+  BlockListResponse,
+  AdminUserListResponse,
+  AdminReportListResponse,
+  AdminResolveReportRequest,
+  AdminResolveReportResponse,
+  AdminRemoveContentRequest,
+  AdminOpsResponse,
+} from "@twenty4/contracts/dto";
+
 /** Wire shape of GET /groups/:id/members (array of member rows). */
 export interface GroupMembersResponse {
   items: GroupMemberResponse[];
@@ -388,29 +401,69 @@ export function createApiClient(options: ApiClientOptions) {
         request<void>(`/comments/${commentId}`, { method: "DELETE" }),
     },
 
-    // --- safety (report + block) ---------------------------------------------
+    // --- safety (report + block; Slice 8) ------------------------------------
+    // Reports + blocks live at ROOT resource paths per spec §8. A report/block
+    // against content the caller can't see → 404 (no existence leak). Blocking is
+    // immediate — the feed + every social action already filter both directions.
     safety: {
-      // TODO(slice 8): report + block DTOs (6.1 / 6.2).
-      report: (input: unknown) => request<unknown>("/reports", { method: "POST", body: input }),
+      /** Report a montage | comment | user. Dedups a repeat OPEN report (idempotent). */
+      report: (input: CreateReportRequest) =>
+        request<ReportResponse>("/reports", { method: "POST", body: input }),
+      /** Block a user (idempotent). Body carries the userId per spec. 204. */
       block: (userId: string) =>
-        request<void>(`/blocks/${userId}`, { method: "POST" }),
+        request<void>("/blocks", { method: "POST", body: { userId } }),
+      /** Unblock (idempotent). 204. */
       unblock: (userId: string) => request<void>(`/blocks/${userId}`, { method: "DELETE" }),
-      listBlocked: () => request<unknown>("/blocks"),
+      /** The caller's blocked-user list (with user summaries). */
+      listBlocked: () => request<BlockListResponse>("/blocks"),
     },
 
-    // --- admin (minimal moderation/ops; apps/admin) --------------------------
+    // --- admin (minimal moderation/ops; apps/admin) — requireAdmin -----------
+    // Every method is admin-only (a non-admin session → 403, audited server-side).
     admin: {
-      // TODO(slice 8): admin search/suspend/ban/report/jobs DTOs.
-      searchUsers: (q: string) => request<unknown>("/admin/users", { query: { q } }),
-      suspendUser: (userId: string, input: unknown) =>
-        request<unknown>(`/admin/users/${userId}/suspend`, { method: "POST", body: input }),
-      banUser: (userId: string, input: unknown) =>
-        request<unknown>(`/admin/users/${userId}/ban`, { method: "POST", body: input }),
-      listReports: (cursor?: string) =>
-        request<unknown>("/admin/reports", { query: { cursor } }),
-      removeContent: (montageId: string, input: unknown) =>
-        request<unknown>(`/admin/montages/${montageId}/remove`, { method: "POST", body: input }),
-      listFailedJobs: () => request<unknown>("/admin/jobs/failed"),
+      /** Search users by handle / email / id (paginated). */
+      searchUsers: (q?: string, params: { status?: string; cursor?: string; limit?: number } = {}) =>
+        request<AdminUserListResponse>("/admin/users", {
+          query: { q, status: params.status, cursor: params.cursor, limit: params.limit },
+        }),
+      /** Suspend a user — flips status + REVOKES their sessions immediately (§7.5). */
+      suspendUser: (userId: string) =>
+        request<{ id: string; accountStatus: "suspended" }>(
+          `/admin/users/${userId}/suspend`,
+          { method: "POST" },
+        ),
+      /** Lift a suspension (status → active). The user must sign in again. */
+      unsuspendUser: (userId: string) =>
+        request<{ id: string; accountStatus: "active" }>(
+          `/admin/users/${userId}/unsuspend`,
+          { method: "POST" },
+        ),
+      /** Ban a user — flips status + REVOKES their sessions immediately (§7.5). */
+      banUser: (userId: string) =>
+        request<{ id: string; accountStatus: "banned" }>(
+          `/admin/users/${userId}/ban`,
+          { method: "POST" },
+        ),
+      /** List reports (defaults to the OPEN moderation queue). */
+      listReports: (params: { status?: string; cursor?: string; limit?: number } = {}) =>
+        request<AdminReportListResponse>("/admin/reports", { query: params }),
+      /** Resolve a report: dismiss | remove_content | suspend_user | ban_user. */
+      resolveReport: (reportId: string, input: AdminResolveReportRequest) =>
+        request<AdminResolveReportResponse>(`/admin/reports/${reportId}/resolve`, {
+          method: "POST",
+          body: input,
+        }),
+      /** Hard-delete a montage's content + write a tombstone (404 thereafter). */
+      removeMontage: (montageId: string, input: AdminRemoveContentRequest = {}) =>
+        request<{ montageId: string; removed: boolean }>(
+          `/admin/montages/${montageId}/remove`,
+          { method: "POST", body: input },
+        ),
+      /** Hard-delete a comment + write a tombstone. 204. */
+      removeComment: (commentId: string) =>
+        request<void>(`/admin/comments/${commentId}`, { method: "DELETE" }),
+      /** Ops dashboard: per-queue job counts, per-bucket storage usage, metrics. */
+      ops: () => request<AdminOpsResponse>("/admin/ops"),
     },
   };
 }

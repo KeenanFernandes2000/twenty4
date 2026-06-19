@@ -8,34 +8,59 @@
  * block: unique(blocker_id, blocked_id); the feed filters BOTH directions.
  */
 import { jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import {
   reportReasonEnum,
   reportStatusEnum,
   reportTargetTypeEnum,
 } from '../enums.js';
-import { createdAt, uuidPk } from './_shared.js';
+import { createdAt, tsTz, uuidPk } from './_shared.js';
 import { users } from './users.js';
 
 /* ---------------------------------- report --------------------------------- */
-export const reports = pgTable('report', {
-  id: uuidPk(),
-  reporterId: uuid('reporter_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  targetType: reportTargetTypeEnum('target_type').notNull(),
-  /** Polymorphic — no FK; target may be purged while report retained (§13). */
-  targetId: uuid('target_id').notNull(),
-  reason: reportReasonEnum('reason').notNull(),
-  status: reportStatusEnum('status').notNull().default('open'),
-  /** Free-form note of the admin action taken (nullable). */
-  adminAction: text('admin_action'),
-  /**
-   * Optional moderation snapshot retained past content expiry where legally
-   * appropriate (§13, max 7d assumption). NO content unless retention applies.
-   */
-  contentSnapshot: jsonb('content_snapshot'),
-  createdAt: createdAt(),
-});
+export const reports = pgTable(
+  'report',
+  {
+    id: uuidPk(),
+    reporterId: uuid('reporter_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    targetType: reportTargetTypeEnum('target_type').notNull(),
+    /** Polymorphic — no FK; target may be purged while report retained (§13). */
+    targetId: uuid('target_id').notNull(),
+    reason: reportReasonEnum('reason').notNull(),
+    status: reportStatusEnum('status').notNull().default('open'),
+    /** Optional reporter free-text detail (NOT in analytics; for moderation only). */
+    detail: text('detail'),
+    /** Free-form note of the admin action taken (nullable). */
+    adminAction: text('admin_action'),
+    /** The admin who resolved this report (nullable until resolved). No FK (admin may be purged). */
+    resolvedByAdminId: uuid('resolved_by_admin_id'),
+    /** When the report was resolved (actioned/dismissed). */
+    resolvedAt: tsTz('resolved_at'),
+    /**
+     * Optional moderation snapshot retained past content expiry where legally
+     * appropriate (§13, max 7d assumption). NO content unless retention applies.
+     */
+    contentSnapshot: jsonb('content_snapshot'),
+    /**
+     * §13 retention: when the `content_snapshot` must be purged (default +7d from
+     * creation). A cleanup sweep nulls the snapshot once this passes so reported
+     * content is not retained indefinitely. Null ⇒ no snapshot to purge.
+     */
+    snapshotPurgeAt: tsTz('snapshot_purge_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // Dedup: one OPEN report per (reporter, target). A repeat report by the same
+    // reporter against the same target while one is still open is a no-op (the
+    // app upserts/no-ops on this index). Partial so resolved reports don't block
+    // a later re-report of the same target.
+    uniqueIndex('report_reporter_target_open_uq')
+      .on(t.reporterId, t.targetType, t.targetId)
+      .where(sql`${t.status} = 'open'`),
+  ],
+);
 
 export type Report = typeof reports.$inferSelect;
 export type NewReport = typeof reports.$inferInsert;

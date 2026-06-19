@@ -1,0 +1,94 @@
+/* twenty4 admin — global styles. Ember dark, utilitarian. */
+:root {
+  --accent: #ff7a52;
+  --accent2: #ffb347;
+  --bg: #161210;
+  --canvas: #0a0a0c;
+  --surface: #221c18;
+  --surface2: #2c241f;
+  --surface3: #382e27;
+  --text: #f7f0e9;
+  --text2: #cdbfb3;
+  --muted: #a3958a;
+  --faint: #6e635a;
+  --field: #2c241f;
+  --border: rgba(255, 240, 230, 0.09);
+  --danger: #ff6a6a;
+  --success: #36c98a;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text);
+  font-family:
+    'Nunito', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::placeholder {
+  color: var(--faint);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+/* thin scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface3);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
