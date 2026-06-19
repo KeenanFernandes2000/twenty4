@@ -19,6 +19,7 @@
  */
 import { errors } from '@twenty4/contracts/errors';
 import { redis } from '../redis/index.js';
+import { env } from '../env.js';
 
 /** Connect the shared lazy client if it isn't already up. */
 async function ensureRedis(): Promise<void> {
@@ -135,10 +136,20 @@ export async function clearFixedWindow(
 
 /* --------------------------- auth-specific limits -------------------------- */
 
-/** OTP send caps: ≤5 per identifier AND ≤5 per IP per 10 minutes. */
+/**
+ * OTP send caps per 10-minute window:
+ *  - per IDENTIFIER: ≤ OTP_SEND_MAX (strict, fixed). This is the real
+ *    brute-force/enumeration defense the security tests assert — do NOT relax it.
+ *  - per IP: ≤ OTP_SEND_IP_MAX (env-configurable, defaults to OTP_SEND_MAX). The
+ *    per-IP dimension is a COARSE abuse-shaper that legitimately needs raising
+ *    behind shared NAT / CI / the api test host (where every test file signs up
+ *    many users from one IP). Raising it does NOT weaken the per-identifier cap.
+ */
 export const OTP_SEND_BUCKET_ID = 'otp:send:id';
 export const OTP_SEND_BUCKET_IP = 'otp:send:ip';
 export const OTP_SEND_MAX = 5;
+/** Env-configurable per-IP send cap (defaults to the strict per-identifier value). */
+export const OTP_SEND_IP_MAX = env.OTP_SEND_IP_MAX;
 export const OTP_SEND_WINDOW = 600;
 
 /** Verify attempt cap: ≤5 per identifier per 10 minutes (survives re-issue). */
@@ -165,7 +176,7 @@ export async function throttleOtpSend(args: {
   const byIp = await consumeFixedWindow({
     bucket: OTP_SEND_BUCKET_IP,
     subject: args.ip,
-    max: OTP_SEND_MAX,
+    max: OTP_SEND_IP_MAX,
     windowSeconds: OTP_SEND_WINDOW,
     failClosed: true,
   });

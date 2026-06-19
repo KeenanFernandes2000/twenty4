@@ -34,6 +34,15 @@ export default defineConfig({
       BETTER_AUTH_SECRET:
         process.env.BETTER_AUTH_SECRET ?? 'dev-only-insecure-better-auth-secret-change-me',
       BETTER_AUTH_URL: process.env.BETTER_AUTH_URL ?? 'http://127.0.0.1:4000',
+      // Effectively disable the COARSE per-IP OTP-send cap under test. Every test
+      // file's beforeAll signs up many users from the test host IP, so the strict
+      // prod default (5/10min) would exhaust CUMULATIVELY across files in one run
+      // and 429 the later files (safety/analytics) — a test-harness artifact, not
+      // a product bug. The strict per-IDENTIFIER cap (OTP_SEND_MAX, the real
+      // brute-force/enumeration defense the auth-security suite asserts) is
+      // UNCHANGED and still bites per-identifier. This only lifts the per-IP
+      // abuse-shaper for the shared CI/test IP, making the suite deterministic.
+      OTP_SEND_IP_MAX: '1000000',
     },
   },
 });

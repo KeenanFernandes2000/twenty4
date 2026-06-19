@@ -87,6 +87,17 @@ const envSchema = z.object({
   // Grace period before the raw-media purge runs after publish (§6 Q5: +60min).
   RAW_PURGE_GRACE_MINUTES: z.coerce.number().int().min(0).default(60),
 
+  // Per-IP OTP-send cap (hits / 10-min window). Defense-in-depth on TOP of the
+  // strict per-IDENTIFIER cap (which is the real brute-force/enumeration defense
+  // and stays fixed at OTP_SEND_MAX). Configurable because the per-IP dimension
+  // is a COARSE abuse-shaper that legitimately needs raising behind shared NAT /
+  // CI: in the api vitest suite every file's beforeAll signs up many users from
+  // the test host IP, so a low per-IP cap would exhaust cumulatively across files
+  // in one run and 429 later files. Set high under test (see vitest.config.ts) to
+  // make the suite deterministic WITHOUT weakening the per-identifier guarantee
+  // the security tests assert. Default matches the strict prod value (5).
+  OTP_SEND_IP_MAX: z.coerce.number().int().positive().default(5),
+
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
