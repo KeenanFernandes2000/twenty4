@@ -27,6 +27,8 @@ export const SWEEP_EXPIRIES_JOB = 'sweep-expiries';
 export const DAY_CLOSE_SWEEP_JOB = 'day-close-sweep';
 /** Raw-reclamation backstop (Fix 2b): hard-delete raw rows whose expiry_at passed. */
 export const RAW_PURGE_SWEEP_JOB = 'raw-purge-sweep';
+/** §13 retention backstop: null reported-content snapshots past `snapshot_purge_at`. */
+export const SNAPSHOT_PURGE_SWEEP_JOB = 'snapshot-purge-sweep';
 
 /* ----------------------------- account queue ------------------------------ */
 

@@ -7,7 +7,7 @@
  *
  * block: unique(blocker_id, blocked_id); the feed filters BOTH directions.
  */
-import { jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { index, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import {
   reportReasonEnum,
@@ -59,6 +59,12 @@ export const reports = pgTable(
     uniqueIndex('report_reporter_target_open_uq')
       .on(t.reporterId, t.targetType, t.targetId)
       .where(sql`${t.status} = 'open'`),
+    // §13 retention: drives the `snapshot-purge-sweep` worker scan that nulls a
+    // reported-content snapshot once `snapshot_purge_at` passes. Partial so it only
+    // indexes the rows the sweep actually cares about (a snapshot still present).
+    index('report_snapshot_purge_due_idx')
+      .on(t.snapshotPurgeAt)
+      .where(sql`${t.contentSnapshot} is not null`),
   ],
 );
 

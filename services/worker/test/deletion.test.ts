@@ -46,6 +46,7 @@ import {
   idempotencyKeys,
   dailyMediaItems,
   auditLog,
+  reports,
 } from '@twenty4/contracts/db';
 import { resolveDayBucket } from '@twenty4/contracts/dayWindow';
 
@@ -54,6 +55,7 @@ import { s3, buckets, closeStorage } from '../src/storage.js';
 import { expireMontage } from '../src/jobs/expireMontage.js';
 import { sweepExpiries } from '../src/jobs/sweepExpiries.js';
 import { rawPurgeSweep } from '../src/jobs/rawPurgeSweep.js';
+import { snapshotPurgeSweep } from '../src/jobs/snapshotPurgeSweep.js';
 import { cleanupRaw } from '../src/jobs/cleanupRaw.js';
 import { dayCloseSweep } from '../src/jobs/dayCloseSweep.js';
 import { purgeAccount } from '../src/jobs/purgeAccount.js';
@@ -806,5 +808,98 @@ describe('§6 deletion suite — the exit gate (live PG + MinIO, real objects)',
     // Both row sets are GONE (Fix 6 — they have no FK to users so the cascade misses them).
     expect(await countRows('idempotency_key', sql`user_id = ${me}`)).toBe(0);
     expect(await countRows('verification', sql`identifier like ${'%' + email}`)).toBe(0);
+  });
+
+  /* ============================================================================ *
+   *  §13 report content_snapshot RETENTION — snapshotPurgeSweep backstop.        *
+   *                                                                              *
+   *  Closes the content-survival hole: a reported montage/comment snapshot       *
+   *  (report.content_snapshot — reporter-visible PII) stamped with a +7d         *
+   *  snapshot_purge_at had NOTHING purging it once an UNRESOLVED report passed    *
+   *  7 days, so it was retained indefinitely past the 24h deletion promise.      *
+   * ============================================================================ */
+
+  /** Seed a report row with a content_snapshot + an explicit snapshot_purge_at. */
+  async function seedReportWithSnapshot(
+    reporterId: string,
+    purgeAt: Date | null,
+    snapshot: Record<string, unknown> = { commentId: randomUUID(), text: 'reported content' },
+  ): Promise<string> {
+    const [row] = await db
+      .insert(reports)
+      .values({
+        reporterId,
+        targetType: 'comment',
+        targetId: randomUUID(),
+        reason: 'other',
+        status: 'open',
+        contentSnapshot: snapshot,
+        snapshotPurgeAt: purgeAt,
+      })
+      .returning({ id: reports.id });
+    return row!.id;
+  }
+
+  async function reportSnapshot(
+    id: string,
+  ): Promise<{ contentSnapshot: unknown; snapshotPurgeAt: Date | null } | undefined> {
+    const [row] = await db
+      .select({
+        contentSnapshot: reports.contentSnapshot,
+        snapshotPurgeAt: reports.snapshotPurgeAt,
+      })
+      .from(reports)
+      .where(eq(reports.id, id))
+      .limit(1);
+    return row;
+  }
+
+  it('S1. snapshotPurgeSweep nulls a DUE snapshot + tombstone; a FUTURE one is untouched; idempotent', async () => {
+    const reporter = await newUser();
+    // DUE: purge_at one hour in the PAST → must be purged.
+    const due = await seedReportWithSnapshot(reporter, new Date(Date.now() - 3600 * 1000));
+    // NOT-DUE: purge_at one day in the FUTURE → must be left alone.
+    const future = await seedReportWithSnapshot(reporter, new Date(Date.now() + 24 * 3600 * 1000));
+
+    // Pre-state: both carry a snapshot + a purge_at.
+    const duePre = await reportSnapshot(due);
+    expect(duePre?.contentSnapshot).not.toBeNull();
+    expect(duePre?.snapshotPurgeAt).not.toBeNull();
+
+    const res = await snapshotPurgeSweep();
+    expect(res.snapshotsPurged).toBe(1);
+
+    // DUE report: snapshot + purge_at BOTH nulled.
+    const duePost = await reportSnapshot(due);
+    expect(duePost?.contentSnapshot).toBeNull();
+    expect(duePost?.snapshotPurgeAt).toBeNull();
+
+    // A content-free `report_snapshot_purged` tombstone was written for it.
+    const tomb = await latestTombstone('report_snapshot_purged', due);
+    expect(tomb).toBeTruthy();
+    expect(tomb!.targetType).toBe('report');
+    // Firewall: no purged content rode along into the tombstone metadata.
+    expect(JSON.stringify(tomb!.metadata ?? {})).not.toContain('reported content');
+
+    // FUTURE report: untouched — snapshot + purge_at both intact.
+    const futurePost = await reportSnapshot(future);
+    expect(futurePost?.contentSnapshot).not.toBeNull();
+    expect(futurePost?.snapshotPurgeAt).not.toBeNull();
+    expect(await latestTombstone('report_snapshot_purged', future)).toBeFalsy();
+
+    // §12 analytics: exactly the rolled-up cleanup result, content-free.
+    const events = drainAnalytics();
+    const ev = events.find((e) => e.event === 'cleanup_job_result' && (e as { job?: string }).job === 'snapshot-purge-sweep');
+    expect(ev).toBeTruthy();
+    expect((ev as { deletedCount?: number }).deletedCount).toBe(1);
+
+    // Idempotent: a re-run finds nothing due → no-op (no second purge, no new tombstone).
+    const again = await snapshotPurgeSweep();
+    expect(again.snapshotsPurged).toBe(0);
+    const tombsAfter = await countRows(
+      'audit_log',
+      sql`action = 'report_snapshot_purged' and target_id = ${due}`,
+    );
+    expect(tombsAfter).toBe(1);
   });
 });

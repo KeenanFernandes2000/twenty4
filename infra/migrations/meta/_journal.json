@@ -71,6 +71,13 @@
       "when": 1781863578020,
       "tag": "0009_slice8_safety_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781866548071,
+      "tag": "0010_slice8_snapshot_purge_idx",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+CREATE INDEX "report_snapshot_purge_due_idx" ON "report" USING btree ("snapshot_purge_at") WHERE "report"."content_snapshot" is not null;

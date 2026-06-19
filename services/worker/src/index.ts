@@ -25,6 +25,7 @@ import {
   SWEEP_EXPIRIES_JOB,
   DAY_CLOSE_SWEEP_JOB,
   RAW_PURGE_SWEEP_JOB,
+  SNAPSHOT_PURGE_SWEEP_JOB,
   ACCOUNT_QUEUE,
   PURGE_ACCOUNT_JOB,
   type ValidateMediaJob,
@@ -42,6 +43,7 @@ import { supersedeCleanup } from './jobs/supersedeCleanup.js';
 import { sweepExpiries } from './jobs/sweepExpiries.js';
 import { dayCloseSweep } from './jobs/dayCloseSweep.js';
 import { rawPurgeSweep } from './jobs/rawPurgeSweep.js';
+import { snapshotPurgeSweep } from './jobs/snapshotPurgeSweep.js';
 import { purgeAccount } from './jobs/purgeAccount.js';
 import { closeDb } from './db.js';
 import { closeStorage } from './storage.js';
@@ -75,6 +77,8 @@ export { dayCloseSweep } from './jobs/dayCloseSweep.js';
 export type { DayCloseSweepResult } from './jobs/dayCloseSweep.js';
 export { rawPurgeSweep } from './jobs/rawPurgeSweep.js';
 export type { RawPurgeSweepResult } from './jobs/rawPurgeSweep.js';
+export { snapshotPurgeSweep } from './jobs/snapshotPurgeSweep.js';
+export type { SnapshotPurgeSweepResult } from './jobs/snapshotPurgeSweep.js';
 export { purgeAccount } from './jobs/purgeAccount.js';
 export type { PurgeAccountResult } from './jobs/purgeAccount.js';
 export {
@@ -166,6 +170,8 @@ export function startRenderWorker(): Worker {
           return dayCloseSweep();
         case RAW_PURGE_SWEEP_JOB:
           return rawPurgeSweep();
+        case SNAPSHOT_PURGE_SWEEP_JOB:
+          return snapshotPurgeSweep();
         default:
           return; // unknown job — ignore
       }
@@ -213,6 +219,9 @@ export function startAccountWorker(): Worker<PurgeAccountJob> {
  *                      expiry_at has passed (covers a lost cleanup-raw job).
  *   - day-close-sweep  every 30 min → purges EVERY CLOSED day's raw + drafts + orphan
  *                      non-published montages (raw is obsolete once a day closes).
+ *   - snapshot-purge-sweep every 30 min → nulls reported-content snapshots
+ *                      (report.content_snapshot) past their §13 7-day purge_at, so an
+ *                      UNRESOLVED report can't retain reported PII indefinitely.
  * Repeatable jobs are deduped by BullMQ on their repeat key, so calling this on
  * every boot is idempotent (it won't stack duplicate schedules).
  */
@@ -230,6 +239,11 @@ export async function registerSweeps(): Promise<Queue> {
   );
   await queue.add(
     DAY_CLOSE_SWEEP_JOB,
+    {},
+    { repeat: { every: 30 * 60 * 1000 }, removeOnComplete: true, removeOnFail: 50 },
+  );
+  await queue.add(
+    SNAPSHOT_PURGE_SWEEP_JOB,
     {},
     { repeat: { every: 30 * 60 * 1000 }, removeOnComplete: true, removeOnFail: 50 },
   );
