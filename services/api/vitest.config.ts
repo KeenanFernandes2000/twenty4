@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Flush rate-limit/OTP Redis counters once up front so frequent suite
+    // reruns inside the 10-min window don't 429 the beforeAll sign-ups.
+    globalSetup: ['./test/globalSetup.ts'],
     // Env is zod-validated at import; provide minimal valid values so `env.ts`
     // doesn't process.exit(1) when a module that imports it loads under test.
     // Prefer the live values sourced from ~/.twenty4-dev-env.sh (real PG role,
