@@ -25,6 +25,8 @@ export const SUPERSEDE_CLEANUP_JOB = 'supersede-cleanup';
 /** Repeatable §6 sweeps (registered on the montage queue at boot). */
 export const SWEEP_EXPIRIES_JOB = 'sweep-expiries';
 export const DAY_CLOSE_SWEEP_JOB = 'day-close-sweep';
+/** Raw-reclamation backstop (Fix 2b): hard-delete raw rows whose expiry_at passed. */
+export const RAW_PURGE_SWEEP_JOB = 'raw-purge-sweep';
 
 /* ----------------------------- account queue ------------------------------ */
 

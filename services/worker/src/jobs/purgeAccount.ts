@@ -33,11 +33,13 @@
  * §11 "within the cleanup SLA" promise is met by enqueue-on-delete + this immediate
  * purge. We record `requestedAt` in the tombstone so SLA can be measured.
  */
-import { eq } from 'drizzle-orm';
+import { eq, inArray, or, sql } from 'drizzle-orm';
 import {
   users,
   montages,
   dailyMediaItems,
+  idempotencyKeys,
+  verification,
 } from '@twenty4/contracts/db';
 import { db } from '../db.js';
 import { buckets, deleteObject } from '../storage.js';
@@ -63,8 +65,10 @@ export async function purgeAccount(
   const started = Date.now();
 
   // 1. Does the user row still exist? If not → idempotent no-op (already purged).
+  //    Also capture email/phone — the auth `verification` (OTP) rows are keyed by
+  //    `identifier` (the email/phone), NOT by user_id, so we need them to clear OTPs.
   const [user] = await db
-    .select({ id: users.id })
+    .select({ id: users.id, email: users.email, phone: users.phone })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
@@ -111,11 +115,31 @@ export async function purgeAccount(
   //     the leaving user's group-visibility links drop with the group. (Authz already
   //     hides a montage with no surviving visible group from feeds.)
 
+  // 3c. ROWS WITH NO FK TO users (Fix 6) — the user-delete cascade does NOT reach
+  //     these, so they'd orphan forever. Delete them explicitly:
+  //       • idempotency_key — `user_id` column, but NO FK to users → not cascaded.
+  //       • verification    — keyed by `identifier` (the email/phone), no user link.
+  //     Better Auth's OTP plugins write the verification `identifier` either as the
+  //     bare email/phone OR a prefixed form (e.g. "sign-in-otp-<email>"), so match
+  //     both an exact identifier and a suffix containing the user's email/phone.
+  await db.delete(idempotencyKeys).where(eq(idempotencyKeys.userId, userId));
+
+  const identifiers = [user.email, user.phone].filter((v): v is string => !!v);
+  if (identifiers.length > 0) {
+    await db.delete(verification).where(
+      or(
+        inArray(verification.identifier, identifiers),
+        ...identifiers.map((v) => sql`${verification.identifier} like ${'%' + v}`),
+      ),
+    );
+  }
+
   // 4. HARD-DELETE the user row. The schema FK cascade removes ALL remaining rows:
   //    daily_media_item, (any straggler) montages, reactions/comments authored
   //    elsewhere, group_members, owned groups (+ their invites/members/visibility),
   //    created invites, blocks (both directions), filed reports, and the Better Auth
-  //    session/account/verification rows. One statement, atomic at the DB.
+  //    session/account rows. One statement, atomic at the DB. (verification +
+  //    idempotency_key have NO FK to users → handled explicitly in 3c above.)
   await db.delete(users).where(eq(users.id, userId));
 
   // 5. Final account tombstone (no content) + §12 aggregate (counts only).

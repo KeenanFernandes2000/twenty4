@@ -198,11 +198,21 @@ export const feedModule: FastifyPluginAsync = async (app) => {
 
     const montageIds = page.map((r) => r.id);
 
-    // Batch-load the full montage rows (for owner id + paths + clocks).
+    // Batch-load the full montage rows (for owner id + paths + clocks). Re-apply the
+    // status='published' AND expiry_at>now guard EXPLICITLY (defensive, self-healing):
+    // the page-id query already filtered on it, but if a montage expired or was
+    // superseded between the two queries this reload must not resurrect it into a card
+    // — a leaked-content guard that costs nothing on the already-narrow id set.
     const fullRows = await db
       .select()
       .from(montages)
-      .where(inArray(montages.id, montageIds));
+      .where(
+        and(
+          inArray(montages.id, montageIds),
+          eq(montages.status, 'published'),
+          gt(montages.expiryAt, now),
+        ),
+      );
     const byId = new Map(fullRows.map((r) => [r.id, r]));
 
     // Batch-load authors.

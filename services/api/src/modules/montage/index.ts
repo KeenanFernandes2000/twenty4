@@ -41,6 +41,7 @@ import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import {
   montages,
   montageGroupVisibility,
+  dailyMediaItems,
   type Montage,
 } from '@twenty4/contracts/db';
 import {
@@ -636,6 +637,24 @@ async function publishMontageTx(
       .insert(montageGroupVisibility)
       .values(groupIds.map((groupId) => ({ montageId: row.id, groupId })))
       .onConflictDoNothing();
+
+    // RAW LIFECYCLE (§6 Q5 / Fix 2a): stamp this day's raw `daily_media_item` rows
+    // with `expiry_at = published_at + grace` so the raw-purge-sweep backstop (and
+    // the `daily_media_item_expiry_idx`) can reclaim them even if the delayed
+    // `cleanup-raw` job (publish+60min) is lost. Set ONLY where not already stamped
+    // so a re-publish doesn't push the grace window forward. The published montage's
+    // OWN video lives in the montages bucket (no expiry_at here), so it's untouched.
+    const rawExpiry = new Date(publishedAt.getTime() + env.RAW_PURGE_GRACE_MINUTES * 60 * 1000);
+    await tx
+      .update(dailyMediaItems)
+      .set({ expiryAt: rawExpiry })
+      .where(
+        and(
+          eq(dailyMediaItems.userId, row.userId),
+          eq(dailyMediaItems.dayBucket, row.dayBucket),
+          sql`${dailyMediaItems.expiryAt} is null`,
+        ),
+      );
 
     return updated!;
   });

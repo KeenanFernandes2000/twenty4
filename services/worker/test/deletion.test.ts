@@ -42,6 +42,8 @@ import {
   comments,
   blocks,
   session as sessionTable,
+  verification,
+  idempotencyKeys,
   dailyMediaItems,
   auditLog,
 } from '@twenty4/contracts/db';
@@ -51,6 +53,7 @@ import { db, closeDb } from '../src/db.js';
 import { s3, buckets, closeStorage } from '../src/storage.js';
 import { expireMontage } from '../src/jobs/expireMontage.js';
 import { sweepExpiries } from '../src/jobs/sweepExpiries.js';
+import { rawPurgeSweep } from '../src/jobs/rawPurgeSweep.js';
 import { cleanupRaw } from '../src/jobs/cleanupRaw.js';
 import { dayCloseSweep } from '../src/jobs/dayCloseSweep.js';
 import { purgeAccount } from '../src/jobs/purgeAccount.js';
@@ -65,12 +68,12 @@ const runTag = randomUUID().slice(0, 8);
 
 let userSeq = 0;
 /** Insert a minimal real user row; returns its id. */
-async function makeUser(): Promise<string> {
+async function makeUser(opts: { email?: string; phone?: string } = {}): Promise<string> {
   const id = randomUUID();
   const handle = `del${runTag}${userSeq++}`;
   await db.execute(sql`
-    insert into users (id, username, display_name, account_status)
-    values (${id}, ${handle}, ${'Del Test'}, 'active')
+    insert into users (id, username, display_name, account_status, email, phone)
+    values (${id}, ${handle}, ${'Del Test'}, 'active', ${opts.email ?? null}, ${opts.phone ?? null})
   `);
   return id;
 }
@@ -242,8 +245,8 @@ async function latestTombstone(action: string, targetId: string) {
 
 /** Track seeded user ids so we can clean up even on failure. */
 const seededUsers: string[] = [];
-async function newUser(): Promise<string> {
-  const id = await makeUser();
+async function newUser(opts: { email?: string; phone?: string } = {}): Promise<string> {
+  const id = await makeUser(opts);
   seededUsers.push(id);
   return id;
 }
@@ -608,5 +611,200 @@ describe('§6 deletion suite — the exit gate (live PG + MinIO, real objects)',
       .limit(1);
     expect(JSON.stringify(row!.metadata)).not.toContain('freeform sentence');
     expect((row!.metadata as Record<string, unknown>).count).toBe(1);
+  });
+
+  /* ================================================================== *
+   *  LOST-JOB BACKSTOP REGRESSIONS — prove the sweep reclaims ALL       *
+   *  content INDEPENDENT of any delayed / supersede / cleanup job.      *
+   * ================================================================== */
+
+  /* ---- Fix 1: replace, then sweep WITHOUT supersede-cleanup --------- */
+  it('B1. sweepExpiries reclaims a SUPERSEDED montage with content — NO supersede-cleanup job ran', async () => {
+    const owner = await newUser();
+    const fan = await newUser();
+    const day = resolveDayBucket(new Date(), TZ);
+    const group = await makeGroup(owner);
+
+    // A formerly-LIVE published montage with content + social.
+    const prior = await makeMontage(owner, day, { status: 'published' });
+    await makeVisible(prior.id, group);
+    await addReaction(prior.id, fan);
+    await addComment(prior.id, fan, 'prior montage secret comment');
+
+    // Simulate EXACTLY what the API replace flow does to the prior row: flip it to
+    // deleted_by_user + point superseded_by at a replacement — but DO NOT run the
+    // supersede-cleanup job (the lost-job scenario). The content/row/social survive.
+    const replacement = await makeMontage(owner, day, { status: 'published' });
+    await db
+      .update(montages)
+      .set({ status: 'deleted_by_user', supersededBy: replacement.id })
+      .where(eq(montages.id, prior.id));
+
+    // Pre-state: the prior row + its S3 + its social are STILL HERE (job was lost).
+    expect(await montageExists(prior.id)).toBe(true);
+    expect(await objectExists(buckets.montages, prior.videoKey)).toBe(true);
+    expect(await countRows('reaction', sql`montage_id = ${prior.id}`)).toBe(1);
+
+    // The BACKSTOP: the repeatable sweep — with no supersede-cleanup ever scheduled —
+    // reclaims the prior montage's bytes + row + social anyway.
+    const res = await sweepExpiries();
+    expect(res.expired).toBeGreaterThanOrEqual(1);
+
+    // Prior montage: S3 bytes gone, row gone, social gone (FK cascade).
+    expect(await montageExists(prior.id)).toBe(false);
+    expect(await objectExists(buckets.montages, prior.videoKey)).toBe(false);
+    expect(await objectExists(buckets.thumbnails, prior.thumbKey)).toBe(false);
+    expect(await countRows('reaction', sql`montage_id = ${prior.id}`)).toBe(0);
+    expect(await countRows('comment', sql`montage_id = ${prior.id}`)).toBe(0);
+    expect(await countRows('montage_group_visibility', sql`montage_id = ${prior.id}`)).toBe(0);
+    // The live replacement is UNTOUCHED.
+    expect(await montageExists(replacement.id)).toBe(true);
+    expect(await objectExists(buckets.montages, replacement.videoKey)).toBe(true);
+    // A content-free tombstone records the reclamation.
+    const tomb = await latestTombstone('montage_replaced', prior.id);
+    expect(tomb).toBeTruthy();
+    expect(JSON.stringify(tomb!.metadata)).not.toContain('secret comment');
+  });
+
+  /* ---- Fix 2b: raw-purge-sweep reclaims raw with NO cleanup-raw job -- */
+  it('B2. rawPurgeSweep reclaims a published day\'s raw (rows+S3) — NO cleanup-raw job ran; published montage survives', async () => {
+    const owner = await newUser();
+    const day = resolveDayBucket(new Date(), TZ);
+
+    // A published montage for the day + its raw, where the API stamped the raw with a
+    // past `expiry_at` (= published_at + grace) but the +60min cleanup-raw job was lost.
+    const published = await makeMontage(owner, day, { status: 'published' });
+    const raw1 = await makeRawMedia(owner, day, {
+      processingStatus: 'used',
+      expiryAt: new Date(Date.now() - 60 * 1000), // already due
+    });
+    const raw2 = await makeRawMedia(owner, day, {
+      processingStatus: 'valid',
+      expiryAt: new Date(Date.now() - 60 * 1000),
+    });
+
+    expect(await objectExists(buckets.raw, raw1.key)).toBe(true);
+
+    // BACKSTOP: the raw sweep hard-deletes due raw rows+S3 with no cleanup-raw job.
+    const res = await rawPurgeSweep();
+    expect(res.rawRowsDeleted).toBeGreaterThanOrEqual(2);
+
+    // Raw rows + S3 gone.
+    expect(await countRows('daily_media_item', sql`user_id = ${owner}`)).toBe(0);
+    expect(await objectExists(buckets.raw, raw1.key)).toBe(false);
+    expect(await objectExists(buckets.raw, raw2.key)).toBe(false);
+    // The PUBLISHED montage SURVIVES independently (it owns its own 24h expiry).
+    expect(await montageExists(published.id)).toBe(true);
+    expect(await objectExists(buckets.montages, published.videoKey)).toBe(true);
+
+    // IDEMPOTENT.
+    const again = await rawPurgeSweep();
+    expect(again.rawRowsDeleted).toBe(0);
+  });
+
+  /* ---- Fix 2c: dayCloseSweep purges a PUBLISHED closed day's raw ----- */
+  it('B3. dayCloseSweep purges a PUBLISHED, CLOSED day\'s raw (no skip-published) — published montage survives', async () => {
+    const owner = await newUser();
+    // A CLOSED day (5 days ago) that HAS a published montage AND lingering raw.
+    const closedDay = resolveDayBucket(new Date(Date.now() - 5 * 24 * 3600 * 1000), TZ);
+    const published = await makeMontage(owner, closedDay, {
+      status: 'published',
+      publishedAt: new Date(Date.now() - 5 * 24 * 3600 * 1000),
+      expiryAt: new Date(Date.now() - 4 * 24 * 3600 * 1000),
+    });
+    const raw1 = await makeRawMedia(owner, closedDay); // expiry_at null — never stamped
+    const raw2 = await makeRawMedia(owner, closedDay);
+
+    const res = await dayCloseSweep();
+    expect(res.rawRowsDeleted).toBeGreaterThanOrEqual(2);
+
+    // Even though the day HAS a published montage, its raw is purged (day closed).
+    expect(await countRows('daily_media_item', sql`user_id = ${owner}`)).toBe(0);
+    expect(await objectExists(buckets.raw, raw1.key)).toBe(false);
+    expect(await objectExists(buckets.raw, raw2.key)).toBe(false);
+    // The published montage row + S3 SURVIVE (it lives on independently).
+    expect(await montageExists(published.id)).toBe(true);
+    expect(await objectExists(buckets.montages, published.videoKey)).toBe(true);
+  });
+
+  /* ---- Fix 3: orphan draft on a closed day whose raw is already gone - */
+  it('B4. dayCloseSweep deletes an ORPHAN draft on a CLOSED day with NO raw rows left', async () => {
+    const owner = await newUser();
+    const closedDay = resolveDayBucket(new Date(Date.now() - 6 * 24 * 3600 * 1000), TZ);
+    // A draft_ready montage on a closed day, with NO raw rows (its raw was already
+    // swept) — the old design would only delete it as a side effect of purgeRawForDay
+    // finding raw, so it survived forever. The new montage-direct scan reclaims it.
+    const orphan = await makeMontage(owner, closedDay, { status: 'draft_ready' });
+    expect(await countRows('daily_media_item', sql`user_id = ${owner}`)).toBe(0);
+    expect(await montageExists(orphan.id)).toBe(true);
+
+    const res = await dayCloseSweep();
+    expect(res.draftMontagesDeleted).toBeGreaterThanOrEqual(1);
+
+    // Orphan draft row + S3 gone, with no raw rows involved.
+    expect(await montageExists(orphan.id)).toBe(false);
+    expect(await objectExists(buckets.montages, orphan.videoKey)).toBe(false);
+  });
+
+  /* ---- Fix 4: CHECK constraint forbids published + NULL expiry ------- */
+  it('B5. DB CHECK rejects inserting a PUBLISHED montage with NULL expiry_at', async () => {
+    const owner = await newUser();
+    const day = resolveDayBucket(new Date(), TZ);
+    // The constraint (status<>published OR expiry_at IS NOT NULL) makes the latent
+    // forever-leak impossible at the source — the insert is rejected by the DB.
+    await expect(
+      db.execute(sql`
+        insert into montage (user_id, day_bucket, status, video_path, expiry_at)
+        values (${owner}, ${day}, 'published', 'some/key.mp4', null)
+      `),
+    ).rejects.toThrow();
+    // And a published row WITH an expiry_at is accepted (sanity).
+    await expect(
+      db.execute(sql`
+        insert into montage (user_id, day_bucket, status, video_path, expiry_at)
+        values (${owner}, ${day}, 'published', 'some/key.mp4', now() + interval '24 hours')
+      `),
+    ).resolves.toBeTruthy();
+  });
+
+  /* ---- Fix 6: account purge clears idempotency_key + verification ---- */
+  it('B6. purgeAccount clears the user\'s idempotency_key + verification (OTP) rows (no FK cascade)', async () => {
+    const email = `del-${runTag}-${userSeq}@example.test`;
+    const me = await newUser({ email });
+    const day = resolveDayBucket(new Date(), TZ);
+    await makeRawMedia(me, day);
+
+    // idempotency_key rows scoped to the user (NO FK to users → would orphan).
+    await db.insert(idempotencyKeys).values({
+      key: `publish:${randomUUID()}`,
+      userId: me,
+      endpoint: 'POST /montages/{id}/publish',
+      requestHash: 'h',
+      responseStatus: 200,
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+    });
+    // verification (OTP) rows keyed by the user's email identifier — both the bare
+    // email and a Better-Auth prefixed form (e.g. "sign-in-otp-<email>").
+    await db.insert(verification).values({
+      identifier: email,
+      value: 'hashed-otp-1',
+      expiresAt: new Date(Date.now() + 600 * 1000),
+    });
+    await db.insert(verification).values({
+      identifier: `sign-in-otp-${email}`,
+      value: 'hashed-otp-2',
+      expiresAt: new Date(Date.now() + 600 * 1000),
+    });
+
+    // Pre-state: both row sets present.
+    expect(await countRows('idempotency_key', sql`user_id = ${me}`)).toBe(1);
+    expect(await countRows('verification', sql`identifier like ${'%' + email}`)).toBe(2);
+
+    const res = await purgeAccount(me, new Date().toISOString());
+    expect(res.purged).toBe(true);
+
+    // Both row sets are GONE (Fix 6 — they have no FK to users so the cascade misses them).
+    expect(await countRows('idempotency_key', sql`user_id = ${me}`)).toBe(0);
+    expect(await countRows('verification', sql`identifier like ${'%' + email}`)).toBe(0);
   });
 });

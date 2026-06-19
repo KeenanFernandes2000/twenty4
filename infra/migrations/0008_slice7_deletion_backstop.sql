@@ -1,0 +1,2 @@
+CREATE INDEX "montage_reclaim_idx" ON "montage" USING btree ("status") WHERE "montage"."status" in ('deleted_by_user', 'removed_by_admin') and ("montage"."video_path" is not null or "montage"."thumbnail_path" is not null);--> statement-breakpoint
+ALTER TABLE "montage" ADD CONSTRAINT "montage_published_has_expiry" CHECK ("montage"."status" <> 'published' or "montage"."expiry_at" is not null);

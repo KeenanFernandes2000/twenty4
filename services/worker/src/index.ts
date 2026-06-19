@@ -24,6 +24,7 @@ import {
   SUPERSEDE_CLEANUP_JOB,
   SWEEP_EXPIRIES_JOB,
   DAY_CLOSE_SWEEP_JOB,
+  RAW_PURGE_SWEEP_JOB,
   ACCOUNT_QUEUE,
   PURGE_ACCOUNT_JOB,
   type ValidateMediaJob,
@@ -40,6 +41,7 @@ import { cleanupRaw } from './jobs/cleanupRaw.js';
 import { supersedeCleanup } from './jobs/supersedeCleanup.js';
 import { sweepExpiries } from './jobs/sweepExpiries.js';
 import { dayCloseSweep } from './jobs/dayCloseSweep.js';
+import { rawPurgeSweep } from './jobs/rawPurgeSweep.js';
 import { purgeAccount } from './jobs/purgeAccount.js';
 import { closeDb } from './db.js';
 import { closeStorage } from './storage.js';
@@ -71,6 +73,8 @@ export { supersedeCleanup } from './jobs/supersedeCleanup.js';
 export type { SupersedeCleanupResult } from './jobs/supersedeCleanup.js';
 export { dayCloseSweep } from './jobs/dayCloseSweep.js';
 export type { DayCloseSweepResult } from './jobs/dayCloseSweep.js';
+export { rawPurgeSweep } from './jobs/rawPurgeSweep.js';
+export type { RawPurgeSweepResult } from './jobs/rawPurgeSweep.js';
 export { purgeAccount } from './jobs/purgeAccount.js';
 export type { PurgeAccountResult } from './jobs/purgeAccount.js';
 export {
@@ -160,6 +164,8 @@ export function startRenderWorker(): Worker {
           return sweepExpiries();
         case DAY_CLOSE_SWEEP_JOB:
           return dayCloseSweep();
+        case RAW_PURGE_SWEEP_JOB:
+          return rawPurgeSweep();
         default:
           return; // unknown job — ignore
       }
@@ -198,10 +204,15 @@ export function startAccountWorker(): Worker<PurgeAccountJob> {
 
 /**
  * Register the REPEATABLE §6 sweeps on the montage queue (belt-and-suspenders):
- *   - sweep-expiries   every 3 min  → deletes published montages past expiry_at
- *                      (covers a lost/failed delayed expire-montage job).
- *   - day-close-sweep  every 30 min → purges CLOSED unpublished days' raw + drafts
- *                      (covers media added but never published before the 4am roll).
+ *   - sweep-expiries   every 3 min  → reclaims ANY content-bearing montage that
+ *                      should be gone (published-past-expiry, NULL-expiry published,
+ *                      OR terminal deleted_by_user/removed_by_admin rows that still
+ *                      hold S3 content) — INDEPENDENT of the delayed expire-montage
+ *                      AND the supersede-cleanup jobs (the core backstop invariant).
+ *   - raw-purge-sweep  every 3 min  → hard-deletes raw daily_media_item rows whose
+ *                      expiry_at has passed (covers a lost cleanup-raw job).
+ *   - day-close-sweep  every 30 min → purges EVERY CLOSED day's raw + drafts + orphan
+ *                      non-published montages (raw is obsolete once a day closes).
  * Repeatable jobs are deduped by BullMQ on their repeat key, so calling this on
  * every boot is idempotent (it won't stack duplicate schedules).
  */
@@ -209,6 +220,11 @@ export async function registerSweeps(): Promise<Queue> {
   const queue = new Queue(MONTAGE_QUEUE, { connection: redisConnection() });
   await queue.add(
     SWEEP_EXPIRIES_JOB,
+    {},
+    { repeat: { every: 3 * 60 * 1000 }, removeOnComplete: true, removeOnFail: 50 },
+  );
+  await queue.add(
+    RAW_PURGE_SWEEP_JOB,
     {},
     { repeat: { every: 3 * 60 * 1000 }, removeOnComplete: true, removeOnFail: 50 },
   );

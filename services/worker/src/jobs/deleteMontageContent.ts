@@ -24,6 +24,12 @@
  * them, the next idempotent run (sweep / replay) still finds the row and finishes
  * the S3 deletes — content is never orphaned with a live row, and a re-run with the
  * row already gone simply no-ops (the keys were captured before the row vanished).
+ *
+ * ATOMICITY (Fix 5): the row delete + the tombstone write run in ONE db transaction.
+ * If a caller passes a tx (`opts.db` is a tx), we use it; otherwise we open our OWN
+ * tx internally so a crash between the row delete and the tombstone can't lose the
+ * tombstone (the pair commits together or not at all). The S3 deletes stay OUTSIDE
+ * the tx, before it — they're idempotent, so a re-run / sweep finishes a partial.
  */
 import { eq, sql } from 'drizzle-orm';
 import { montages } from '@twenty4/contracts/db';
@@ -95,57 +101,82 @@ export async function deleteMontageContent(
     .limit(1);
   if (!row) return empty(false);
 
-  // Capture the S3 keys + social counts BEFORE the cascade removes the children.
-  const [reactionCount, commentCount, visibilityCount] = await Promise.all([
-    countWhere(db, sql`select count(*)::int as n from reaction where montage_id = ${montageId}`),
-    countWhere(db, sql`select count(*)::int as n from comment where montage_id = ${montageId}`),
-    countWhere(
-      db,
-      sql`select count(*)::int as n from montage_group_visibility where montage_id = ${montageId}`,
-    ),
-  ]);
-
   const videoKey = row.videoPath ?? null;
   const thumbnailKey = row.thumbnailPath ?? null;
 
-  // 2. Delete S3 objects FIRST (idempotent). A missing object is a no-op, so a
-  //    leaked presigned GET 404s once the content is gone (§6/§11). Done before the
-  //    row delete so a crash mid-way still leaves the row for the sweep to finish.
+  // 2. Delete S3 objects FIRST (idempotent), OUTSIDE the tx. A missing object is a
+  //    no-op, so a leaked presigned GET 404s once the content is gone (§6/§11). Done
+  //    before the row delete so a crash mid-way still leaves the row for the sweep to
+  //    finish — and a tx rollback can never "un-delete" an S3 object, so keeping them
+  //    out of the tx keeps the invariant "bytes go first, row+tombstone go together".
   if (videoKey) await deleteObject(buckets.montages, videoKey);
   if (thumbnailKey) await deleteObject(buckets.thumbnails, thumbnailKey);
 
-  // 3. HARD-DELETE the row. FK ON DELETE CASCADE removes reactions + comments +
-  //    visibility in the same statement (atomic). Guard on id so a concurrent
-  //    delete can't double-fire (the loser's `deleted` is empty).
-  const deletedRows = await db
-    .delete(montages)
-    .where(eq(montages.id, montageId))
-    .returning({ id: montages.id });
-  if (deletedRows.length === 0) {
+  // 3+4 ATOMIC: count social → hard-delete the row (FK cascade removes children) →
+  //    write the tombstone, ALL in ONE transaction. If `opts.db` is already a tx, we
+  //    run in it; otherwise we open our own so a crash between the row delete and the
+  //    tombstone can never lose the tombstone (they commit together or not at all).
+  const runAtomic = async (tx: Db): Promise<DeleteMontageResult | null> => {
+    // Counts captured INSIDE the tx, BEFORE the cascade removes the children.
+    const [reactionCount, commentCount, visibilityCount] = await Promise.all([
+      countWhere(tx, sql`select count(*)::int as n from reaction where montage_id = ${montageId}`),
+      countWhere(tx, sql`select count(*)::int as n from comment where montage_id = ${montageId}`),
+      countWhere(
+        tx,
+        sql`select count(*)::int as n from montage_group_visibility where montage_id = ${montageId}`,
+      ),
+    ]);
+
+    // HARD-DELETE the row. FK ON DELETE CASCADE removes reactions + comments +
+    // visibility in the same statement. Guard on id so a concurrent delete can't
+    // double-fire (the loser sees zero rows → null → idempotent no-op).
+    const deletedRows = await tx
+      .delete(montages)
+      .where(eq(montages.id, montageId))
+      .returning({ id: montages.id });
+    if (deletedRows.length === 0) return null;
+
+    // TOMBSTONE — actor/action/target/counts, NO content. Same tx as the row delete.
+    await writeAuditTombstone(
+      {
+        actorId: opts.actorId ?? null,
+        action: REASON_TO_ACTION[reason],
+        targetType: 'montage',
+        targetId: montageId,
+        metadata: {
+          reason,
+          reactions: reactionCount,
+          comments: commentCount,
+          groups: visibilityCount,
+          userId: row.userId,
+          dayBucket: row.dayBucket,
+        },
+      },
+      tx,
+    );
+
+    return {
+      montageId,
+      deleted: true,
+      reactionCount,
+      commentCount,
+      visibilityCount,
+      videoKey,
+      thumbnailKey,
+    };
+  };
+
+  // Use the caller's tx if given; else open our own so the pair is atomic.
+  const result = opts.db
+    ? await runAtomic(opts.db)
+    : await defaultDb.transaction((tx) => runAtomic(tx as unknown as Db));
+
+  if (!result) {
     // Lost a race with a concurrent deleter — they own the tombstone/analytics.
     return empty(false);
   }
 
-  // 4. TOMBSTONE — actor/action/target/counts, NO content.
-  await writeAuditTombstone(
-    {
-      actorId: opts.actorId ?? null,
-      action: REASON_TO_ACTION[reason],
-      targetType: 'montage',
-      targetId: montageId,
-      metadata: {
-        reason,
-        reactions: reactionCount,
-        comments: commentCount,
-        groups: visibilityCount,
-        userId: row.userId,
-        dayBucket: row.dayBucket,
-      },
-    },
-    db,
-  );
-
-  // 5. §12 analytics aggregate — counts only, no content.
+  // 5. §12 analytics aggregate — counts only, no content. AFTER the tx commits.
   if (emit) {
     emitAnalytics({
       event: 'expired_media_deleted_count',
@@ -155,15 +186,7 @@ export async function deleteMontageContent(
     });
   }
 
-  return {
-    montageId,
-    deleted: true,
-    reactionCount,
-    commentCount,
-    visibilityCount,
-    videoKey,
-    thumbnailKey,
-  };
+  return result;
 }
 
 /** Run a `select count(*)::int as n` and return n (0 if no row). */

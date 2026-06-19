@@ -7,6 +7,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  check,
   date,
   index,
   integer,
@@ -66,11 +67,28 @@ export const montages = pgTable(
     expiryAt: tsTz('expiry_at'),
   },
   (t) => [
-    // §5 LOAD-BEARING partial index — drives feed + expiry sweeps.
+    // §5 LOAD-BEARING partial index — drives feed + the published-expiry sweep clause.
     index('montage_published_status_expiry_idx')
       .on(t.status, t.expiryAt)
       .where(sql`${t.status} = 'published'`),
     index('montage_user_day_idx').on(t.userId, t.dayBucket),
+    // Slice 7 BACKSTOP (Fix 1): drives the content-reclamation sweep's terminal-status
+    // clause — terminal rows (deleted_by_user / removed_by_admin) that STILL hold S3
+    // content (a superseded/removed montage whose content-delete job was lost). Partial
+    // so it indexes ONLY the tiny set of content-bearing terminal rows — a normal
+    // tombstoned/expired row (no paths) is excluded, keeping the scan trivially small.
+    index('montage_reclaim_idx')
+      .on(t.status)
+      .where(
+        sql`${t.status} in ('deleted_by_user', 'removed_by_admin') and (${t.videoPath} is not null or ${t.thumbnailPath} is not null)`,
+      ),
+    // Slice 7 INVARIANT (Fix 4): a published montage MUST have an expiry_at, so the
+    // 24h-expiry sweep can never miss it (a NULL-expiry published row was a latent
+    // forever-leak). The DB rejects inserting/flipping a published row without one.
+    check(
+      'montage_published_has_expiry',
+      sql`${t.status} <> 'published' or ${t.expiryAt} is not null`,
+    ),
   ],
 );
 
