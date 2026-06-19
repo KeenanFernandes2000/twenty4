@@ -1,6 +1,6 @@
 // @twenty4/api-client — public entry.
 export { createApiClient } from "./client";
-export type { ApiClient, ApiClientOptions } from "./client";
+export type { ApiClient, ApiClientOptions, GroupMembersResponse } from "./client";
 export {
   ApiError,
   UnauthorizedError,

@@ -53,6 +53,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (root === 'gallery') return;
 
     const inAuthGroup = root === '(auth)';
+    // The invite deep-link route (`/invite/[code]`) redirects into the Groups
+    // join screen once signed in; let signed-in users pass through so its
+    // <Redirect> can carry the code. Signed-out users still get routed to auth.
+    const onInviteLink = root === 'invite';
 
     if (status === 'signedOut') {
       if (!inAuthGroup) router.replace('/(auth)/welcome');
@@ -68,6 +72,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       if (!onProfileFlow) router.replace('/(auth)/profile-setup');
       return;
     }
+
+    // Signed in + on the invite deep-link: let its <Redirect> route into Groups.
+    if (onInviteLink) return;
 
     if (inAuthGroup) router.replace('/(main)/today');
   }, [status, needsProfile, segments, router]);
@@ -103,6 +110,7 @@ export default function RootLayout() {
                 />
                 <Stack.Screen name="(auth)" />
                 <Stack.Screen name="(main)" />
+                <Stack.Screen name="invite/[code]" />
               </Stack>
             </AuthGate>
           </ThemeProvider>

@@ -26,6 +26,24 @@ import type {
   MeResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 4 (groups + invites/join) DTOs.
+import type {
+  CreateGroupRequest,
+  UpdateGroupRequest,
+  CreateInviteRequest,
+  GroupResponse,
+  GroupListResponse,
+  GroupMemberResponse,
+  InviteResponse,
+  InvitePreviewResponse,
+  JoinGroupResponse,
+} from "@twenty4/contracts/dto";
+
+/** Wire shape of GET /groups/:id/members (array of member rows). */
+export interface GroupMembersResponse {
+  items: GroupMemberResponse[];
+}
+
 // -----------------------------------------------------------------------------
 // Errors (typed; shape: { code, message, status })
 // -----------------------------------------------------------------------------
@@ -194,21 +212,43 @@ export function createApiClient(options: ApiClientOptions) {
       deleteMe: () => request<void>("/users/me", { method: "DELETE" }),
     },
 
-    // --- groups ---------------------------------------------------------------
+    // --- groups (Slice 4) -----------------------------------------------------
     groups: {
-      // TODO(slice 4): group + member + invite DTOs.
-      list: () => request<unknown>("/groups"),
-      get: (id: string) => request<unknown>(`/groups/${id}`),
-      create: (input: unknown) => request<unknown>("/groups", { method: "POST", body: input }),
-      update: (id: string, input: unknown) =>
-        request<unknown>(`/groups/${id}`, { method: "PATCH", body: input }),
+      /** The caller's active groups (member count + role per group). */
+      list: () => request<GroupListResponse>("/groups"),
+      /** A single group the caller is a member of (403 if not). */
+      get: (id: string) => request<GroupResponse>(`/groups/${id}`),
+      /** Create a group; the caller becomes its owner. */
+      create: (input: CreateGroupRequest) =>
+        request<GroupResponse>("/groups", { method: "POST", body: input }),
+      /** Owner/admin: update name / photo / status (archive). */
+      update: (id: string, input: UpdateGroupRequest) =>
+        request<GroupResponse>(`/groups/${id}`, { method: "PATCH", body: input }),
+      /** Owner-only: archive the group (204). */
+      archive: (id: string) => request<void>(`/groups/${id}`, { method: "DELETE" }),
+      /** Caller leaves the group (204; sole-owner of a non-empty group → 409). */
       leave: (id: string) => request<void>(`/groups/${id}/leave`, { method: "POST" }),
-      members: (id: string) => request<unknown>(`/groups/${id}/members`),
-      createInvite: (id: string, input: unknown) =>
-        request<unknown>(`/groups/${id}/invites`, { method: "POST", body: input }),
+      /** Members-only: list active members (+ role). */
+      members: (id: string) => request<GroupMembersResponse>(`/groups/${id}/members`),
+      /** Owner/admin removes a member (role hierarchy enforced; 204). */
+      removeMember: (id: string, userId: string) =>
+        request<void>(`/groups/${id}/members/${userId}`, { method: "DELETE" }),
+      /** Owner/admin: mint an invite code (expiry + use-cap). */
+      createInvite: (id: string, input?: CreateInviteRequest) =>
+        request<InviteResponse>(`/groups/${id}/invites`, {
+          method: "POST",
+          body: input ?? {},
+        }),
+      /** Owner/admin: revoke an invite (204). */
+      revokeInvite: (id: string, inviteId: string) =>
+        request<void>(`/groups/${id}/invites/${inviteId}`, { method: "DELETE" }),
       // Deep link twenty4://invite/[code] → resolve + join (expiry + use-cap).
-      resolveInvite: (code: string) => request<unknown>(`/invites/${code}`),
-      joinInvite: (code: string) => request<unknown>(`/invites/${code}/join`, { method: "POST" }),
+      /** Public-ish invite preview (name/photo/count + validity). */
+      resolveInvite: (code: string) =>
+        request<InvitePreviewResponse>(`/invites/${code}`),
+      /** Redeem a code → join the group (atomic + race-safe). */
+      joinInvite: (code: string) =>
+        request<JoinGroupResponse>(`/invites/${code}/join`, { method: "POST" }),
     },
 
     // --- media ----------------------------------------------------------------
@@ -307,18 +347,29 @@ export type ApiClient = ReturnType<typeof createApiClient>;
 // -----------------------------------------------------------------------------
 
 function toApiError(status: number, body: unknown): ApiError {
-  // Expected error envelope: { code, message }. Fall back gracefully.
+  // The API serializes typed errors into a `{ error: { code, message, status,
+  // details } }` envelope (contracts `ApiError.toEnvelope`). Unwrap it; fall back
+  // to a bare `{ code, message }` body, then to HTTP-status defaults.
+  const envelope = isRecord(body) && isRecord(body.error) ? body.error : body;
   const code =
-    isRecord(body) && typeof body.code === "string" ? body.code : httpFallbackCode(status);
+    isRecord(envelope) && typeof envelope.code === "string"
+      ? envelope.code
+      : httpFallbackCode(status);
   const message =
-    isRecord(body) && typeof body.message === "string"
-      ? body.message
+    isRecord(envelope) && typeof envelope.message === "string"
+      ? envelope.message
       : `Request failed with status ${status}`;
+  const details =
+    isRecord(envelope) && isRecord(envelope.details) ? envelope.details : undefined;
   const shape: ApiErrorShape = { code, message, status };
 
-  if (status === 401) return new UnauthorizedError(shape, body);
-  if (status === 403 && code === "suspended") return new SuspendedError(shape, body);
-  return new ApiError(shape, body);
+  // Preserve the unwrapped envelope (incl. `details`) as the error body so
+  // callers can switch on `details.reason` (e.g. `already_member`, `sole_owner`).
+  const errorBody = details !== undefined ? { ...(envelope as object), details } : envelope;
+
+  if (status === 401) return new UnauthorizedError(shape, errorBody);
+  if (status === 403 && code === "suspended") return new SuspendedError(shape, errorBody);
+  return new ApiError(shape, errorBody);
 }
 
 function httpFallbackCode(status: number): string {

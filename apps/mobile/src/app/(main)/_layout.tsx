@@ -43,6 +43,9 @@ export default function MainLayout() {
         name="groups"
         options={{
           title: 'Groups',
+          // The groups tab is its own Stack (groups/_layout) which renders the
+          // per-screen header; hide the tab-level header to avoid a double bar.
+          headerShown: false,
           tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" color={color} size={size} />,
         }}
       />

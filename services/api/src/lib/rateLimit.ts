@@ -226,3 +226,34 @@ async function ttlOf(bucket: string, subject: string): Promise<number> {
     return VERIFY_ATTEMPT_WINDOW;
   }
 }
+
+/* --------------------------- group / invite limits ------------------------- */
+
+/**
+ * Invite-join cap (§8 "rate limits on … invite-join"; PLAN §3). Bound how often
+ * a single user can ATTEMPT to redeem invite codes, so a leaked/guessed-code
+ * brute force or join-spam is throttled. Keyed on the caller's user id. Fails
+ * OPEN (not closed) if Redis is down: a transient Redis outage must not lock
+ * legitimate users out of joining groups — the DB transaction is still the hard
+ * race/cap guarantee, this limiter is only abuse-shaping on top.
+ */
+export const INVITE_JOIN_BUCKET = 'invite:join:user';
+export const INVITE_JOIN_MAX = 20;
+export const INVITE_JOIN_WINDOW = 600; // 20 join attempts / 10 min / user.
+
+/** Throttle an invite-join attempt for a user; throws 429 when exceeded. */
+export async function throttleInviteJoin(userId: string): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: INVITE_JOIN_BUCKET,
+    subject: userId,
+    max: INVITE_JOIN_MAX,
+    windowSeconds: INVITE_JOIN_WINDOW,
+    // Fail open: don't block real joins on a Redis blip (DB txn is the hard cap).
+    failClosed: false,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many join attempts; try again later', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}

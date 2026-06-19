@@ -20,7 +20,7 @@ import { healthRoutes } from './routes/health.js';
 import { authModule } from './modules/auth/index.js';
 import { betterAuthHandler } from './auth/handler.js';
 import { usersModule } from './modules/users/index.js';
-import { groupsModule } from './modules/groups/index.js';
+import { groupsModule, invitesModule } from './modules/groups/index.js';
 import { mediaModule } from './modules/media/index.js';
 import { montageModule } from './modules/montage/index.js';
 import { feedModule } from './modules/feed/index.js';
@@ -136,6 +136,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   // --- Resource modules (filled in later slices) ---
   await app.register(usersModule, { prefix: '/users' });
   await app.register(groupsModule, { prefix: '/groups' });
+  // Invite resolution/join live at the ROOT `/invites/...` prefix per spec §8.
+  await app.register(invitesModule, { prefix: '/invites' });
   await app.register(mediaModule, { prefix: '/media' });
   await app.register(montageModule, { prefix: '/montages' });
   await app.register(feedModule, { prefix: '/feed' });

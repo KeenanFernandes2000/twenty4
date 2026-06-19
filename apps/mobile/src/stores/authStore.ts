@@ -40,7 +40,20 @@ interface AuthState {
   signOut: () => Promise<void>;
 }
 
-/** Best-effort SecureStore write (no-op where unavailable, e.g. web export). */
+/**
+ * Web fallback store. SecureStore is unavailable on web (export + browser), so
+ * there the session would only live in memory and be lost on reload. We fall
+ * back to `localStorage` on web so a signed-in session survives a page reload
+ * (and so the web screenshot/dev harness can pre-seed a token). Native keeps
+ * using the encrypted SecureStore exclusively.
+ */
+const webStore: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null =
+  typeof globalThis !== 'undefined' &&
+  (globalThis as { localStorage?: Storage }).localStorage
+    ? (globalThis as unknown as { localStorage: Storage }).localStorage
+    : null;
+
+/** Best-effort persist: SecureStore on native, localStorage on web. */
 async function persist(key: string, value: string | null): Promise<void> {
   try {
     if (value === null) {
@@ -49,16 +62,33 @@ async function persist(key: string, value: string | null): Promise<void> {
       await SecureStore.setItemAsync(key, value);
     }
   } catch {
-    // SecureStore unavailable (web) — token lives in memory for this session.
+    // SecureStore unavailable (web) — fall back to localStorage below.
+  }
+  if (webStore) {
+    try {
+      if (value === null) webStore.removeItem(key);
+      else webStore.setItem(key, value);
+    } catch {
+      // private-mode / quota — token still lives in memory for this session.
+    }
   }
 }
 
 async function read(key: string): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(key);
+    const v = await SecureStore.getItemAsync(key);
+    if (v != null) return v;
   } catch {
-    return null;
+    // fall through to the web store.
   }
+  if (webStore) {
+    try {
+      return webStore.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
