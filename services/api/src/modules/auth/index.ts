@@ -60,6 +60,42 @@ function mapBlockedSignin(err: unknown): ReturnType<typeof errors.banned> | null
   }
 }
 
+/**
+ * RAW Better Auth OTP send/verify/session-mint HTTP endpoints we DENY to
+ * external callers (scope-relative to the /auth prefix). Enumerated from the
+ * live BA 1.6 instance (emailOTP + phoneNumber plugins). The ONLY public way to
+ * send/verify an OTP is POST /auth/start + POST /auth/verify, which enforce the
+ * per-identifier OTP-send throttle and the cross-reissue verify-attempt budget.
+ *
+ * Denying these here (Fastify route layer) does NOT affect the façade's
+ * in-process `auth.api.*` calls (those never hit the Fastify router). See the
+ * deny-loop comment below for why this MUST NOT move to the BA `hooks.before`.
+ */
+const DENIED_RAW_OTP_PATHS = [
+  // --- email OTP: send + verify + check ---
+  '/email-otp/send-verification-otp', // sends an OTP (sign-in / email-verification / forget-password)
+  '/sign-in/email-otp', // verifies OTP → mints a session
+  '/email-otp/verify-email', // verifies OTP (email-verification)
+  '/email-otp/check-verification-otp', // verifies OTP without consuming
+  // --- email OTP: change-email variants (send/verify OTP via the same transport) ---
+  '/email-otp/request-email-change', // sends an OTP (inert today: change-email disabled, denied defense-in-depth)
+  '/email-otp/change-email', // verifies the change-email OTP (inert today, locked shut)
+  // --- email OTP: password-reset variants (also send/verify OTP) ---
+  '/forget-password/email-otp', // sends a reset OTP
+  '/email-otp/request-password-reset', // sends a reset OTP
+  '/email-otp/reset-password', // verifies the reset OTP
+  // --- phone OTP: send + verify ---
+  '/phone-number/send-otp', // sends an OTP
+  '/phone-number/verify', // verifies OTP → mints a session
+  '/sign-in/phone-number', // phone credential sign-in (session-mint surface)
+  // --- phone OTP: password-reset variants ---
+  '/phone-number/request-password-reset', // sends a reset OTP
+  '/phone-number/reset-password', // verifies the reset OTP
+  // --- credential sign-in/sign-up surfaces (password disabled, denied DiD) ---
+  '/sign-in/email', // email+password sign-in (disabled, but locked shut)
+  '/sign-up/email', // email+password sign-up (disabled, but locked shut)
+] as const;
+
 /** Redis key for an OTP challenge → identifier+method mapping. */
 const challengeKey = (id: string): string => `auth:challenge:${id}`;
 const CHALLENGE_TTL = 600; // 10 min, matches OTP expiry.
@@ -249,6 +285,40 @@ export const authModule: FastifyPluginAsync = async (app) => {
       url: path,
       handler: async () => {
         throw errors.forbidden('endpoint disabled; use PATCH /users/me');
+      },
+    });
+  }
+
+  // ---- Deny Better Auth's RAW OTP send/verify/session-mint endpoints --------
+  // SECURITY (adversarial finding): the per-identifier OTP-send throttle and the
+  // cross-reissue verify-attempt budget live ONLY on POST /auth/start + /verify.
+  // Better Auth's native OTP HTTP routes bypass ALL of it (its per-OTP attempt
+  // cap RESETS on every re-issue, and its in-memory limiter is X-Forwarded-For
+  // spoofable). An attacker hitting the raw routes directly could brute-force or
+  // spam OTPs. We register exact-path façade deny routes BEFORE the BA catch-all
+  // (same scope ⇒ they win precedence) returning 403 forbidden.
+  //
+  // CRITICAL: this denial is done ONLY at the Fastify route layer — NOT in the
+  // BA `hooks.before` in betterAuth.ts. The façade drives these SAME BA endpoints
+  // IN-PROCESS via `auth.api.sendVerificationOTP` / `signInEmailOTP` /
+  // `sendPhoneNumberOTP` / `verifyPhoneNumber`, which run through `hooks.before`
+  // with the same `ctx.path`. Denying at the BA-hook layer would therefore block
+  // the façade's own internal calls and brick the only legitimate OTP path. The
+  // Fastify route layer is reached by EXTERNAL HTTP callers only; the in-process
+  // `auth.api.*` calls never touch the Fastify router, so they stay unaffected.
+  //
+  // Paths are scope-relative (this module is mounted under the /auth prefix) and
+  // were enumerated from the live Better Auth 1.6 instance (auth.api endpoint
+  // metadata) — emailOTP + phoneNumber plugins, every OTP send/verify + every
+  // OTP-backed reset variant + the credential sign-in/sign-up surfaces.
+  for (const path of DENIED_RAW_OTP_PATHS) {
+    app.route({
+      method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      url: path,
+      handler: async () => {
+        throw errors.forbidden(
+          'endpoint disabled; use POST /auth/start + POST /auth/verify',
+        );
       },
     });
   }

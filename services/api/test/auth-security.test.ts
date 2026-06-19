@@ -32,11 +32,20 @@ import {
 
 const RUN = Date.now();
 const createdEmails: string[] = [];
+const createdPhones: string[] = [];
 
 function mkEmail(tag: string): string {
   const e = `sec-${tag}-${RUN}-${Math.floor(Math.random() * 1e6)}@twenty4.test`;
   createdEmails.push(e);
   return e;
+}
+
+/** Unique E.164-ish test phone number (tracked for afterAll cleanup). */
+function mkPhone(): string {
+  const n = String(Math.floor(Math.random() * 1e7)).padStart(7, '0');
+  const p = `+1555${n}`;
+  createdPhones.push(p);
+  return p;
 }
 
 async function ensureRedis(): Promise<void> {
@@ -52,6 +61,13 @@ async function resetLimits(identifier: string, ip = '127.0.0.1'): Promise<void> 
   await redis.del(`rl:${OTP_SEND_BUCKET_ID}:${id}`);
   await redis.del(`rl:${VERIFY_ATTEMPT_BUCKET}:${id}`);
   await redis.del(`rl:${OTP_SEND_BUCKET_IP}:${ip}`);
+  // Also clear the coarse @fastify/rate-limit per-IP buckets (keyed on the test
+  // host IP). These are defense-in-depth ON TOP of the lib `rl:` counters above
+  // — the lib counters are the hard guarantees the suite asserts. Without this,
+  // the many /start + /verify calls across this run accumulate on a single IP
+  // (127.0.0.1) and the coarse cap (≤20 /start, ≤30 /verify per 10min) fires on
+  // later legitimate flows, poisoning them. Safe + deterministic to clear here.
+  await purgeHttpLimiter();
 }
 
 /**
@@ -81,6 +97,13 @@ describe('auth security hardening (live DB + redis)', () => {
     for (const e of createdEmails) {
       try {
         await db.execute(sql`delete from users where email = ${e}`);
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const p of createdPhones) {
+      try {
+        await db.execute(sql`delete from users where phone = ${p}`);
       } catch {
         /* ignore */
       }
@@ -140,6 +163,37 @@ describe('auth security hardening (live DB + redis)', () => {
     });
     expect(otpRes.statusCode).toBe(200);
     return { challengeId, code: otpRes.json().code as string };
+  }
+
+  /** Full real PHONE handshake via the façade → { token, userId }. */
+  async function signInPhone(phone: string): Promise<{ token: string; userId: string }> {
+    await resetLimits(phone);
+    const start = await app.inject({
+      method: 'POST',
+      url: '/auth/start',
+      payload: { method: 'phone', identifier: phone },
+    });
+    expect(start.statusCode).toBe(200);
+    const challengeId = start.json().challengeId as string;
+    const otpRes = await app.inject({
+      method: 'GET',
+      url: `/auth/dev/last-otp?identifier=${encodeURIComponent(phone)}`,
+    });
+    expect(otpRes.statusCode).toBe(200);
+    const verify = await app.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      payload: { challengeId, code: otpRes.json().code as string },
+    });
+    expect(verify.statusCode).toBe(200);
+    const token = verify.json().accessToken as string;
+    const me = await app.inject({
+      method: 'GET',
+      url: '/users/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(me.statusCode).toBe(200);
+    return { token, userId: me.json().id as string };
   }
 
   // --- Finding 2: /auth/refresh enforces account-status -----------------------
@@ -429,6 +483,156 @@ describe('auth security hardening (live DB + redis)', () => {
       expect(res.statusCode).toBe(429);
       expect(res.json()).toMatchObject({ error: { code: 'rate_limited', status: 429 } });
       expect(res.json().accessToken).toBeUndefined();
+    });
+  });
+
+  // --- Finding 6: raw Better Auth OTP endpoints are denied to external HTTP ----
+  // The per-identifier OTP-send throttle + cross-reissue verify-attempt budget
+  // live ONLY on POST /auth/start + /verify. Better Auth's native OTP HTTP routes
+  // bypass ALL of it (its per-OTP attempt cap RESETS on every re-issue; its
+  // in-memory limiter is X-Forwarded-For spoofable). We hard-deny every raw OTP
+  // send/verify/session-mint route at the Fastify route layer (403). The ONLY
+  // public way to do OTP is the façade. Internal `auth.api.*` calls are NOT
+  // affected (they never touch the Fastify router), so the façade still works.
+  describe('raw Better Auth OTP/sign-in endpoints are denied to external callers', () => {
+    // Every raw BA OTP send/verify + OTP-backed reset + credential sign-in/up
+    // route (enumerated from the live BA 1.6 instance). All must 403.
+    const DENIED_RAW: string[] = [
+      '/auth/email-otp/send-verification-otp',
+      '/auth/sign-in/email-otp',
+      '/auth/email-otp/verify-email',
+      '/auth/email-otp/check-verification-otp',
+      '/auth/email-otp/request-email-change',
+      '/auth/email-otp/change-email',
+      '/auth/forget-password/email-otp',
+      '/auth/email-otp/request-password-reset',
+      '/auth/email-otp/reset-password',
+      '/auth/phone-number/send-otp',
+      '/auth/phone-number/verify',
+      '/auth/sign-in/phone-number',
+      '/auth/phone-number/request-password-reset',
+      '/auth/phone-number/reset-password',
+      '/auth/sign-in/email',
+      '/auth/sign-up/email',
+    ];
+
+    it.each(DENIED_RAW)('POST %s → 403 forbidden (blocked at the façade)', async (url) => {
+      const res = await app.inject({
+        method: 'POST',
+        url,
+        payload: {
+          email: mkEmail('raw-deny'),
+          phoneNumber: mkPhone(),
+          otp: '000000',
+          code: '000000',
+          type: 'sign-in',
+        },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: { code: 'forbidden', status: 403 } });
+      // Never leaks a session token via the raw path.
+      expect(res.json().accessToken).toBeUndefined();
+    });
+
+    it('raw /auth/email-otp/send-verification-otp does NOT send/cache an OTP (no bypass of send throttle)', async () => {
+      const email = mkEmail('raw-no-send');
+      await resetLimits(email);
+      // Attacker tries the raw send endpoint directly.
+      const raw = await app.inject({
+        method: 'POST',
+        url: '/auth/email-otp/send-verification-otp',
+        payload: { email, type: 'sign-in' },
+      });
+      expect(raw.statusCode).toBe(403);
+      // No OTP was actually issued (the dev cache is empty for this identifier).
+      const otp = await app.inject({
+        method: 'GET',
+        url: `/auth/dev/last-otp?identifier=${encodeURIComponent(email)}`,
+      });
+      expect(otp.statusCode).toBe(404);
+    });
+
+    it('brute-force via the raw verify endpoint is impossible — every attempt is 403 (never reaches OTP check)', async () => {
+      // Stand up a real user + a live, valid OTP via the façade.
+      const email = mkEmail('raw-brute');
+      await signIn(email);
+      const { code: realCode } = await freshChallenge(email);
+
+      // Hammer the RAW BA verify endpoint many times — including with the REAL
+      // code. Every single attempt must be a 403 deny; it must NEVER mint a
+      // session and must NEVER fall through to BA's resettable per-OTP cap.
+      for (let i = 0; i < 12; i++) {
+        const guess = i === 11 ? realCode : String(i).padStart(6, '0');
+        const res = await app.inject({
+          method: 'POST',
+          url: '/auth/sign-in/email-otp',
+          payload: { email, otp: guess },
+        });
+        expect(res.statusCode).toBe(403);
+        expect(res.json()).toMatchObject({ error: { code: 'forbidden', status: 403 } });
+        expect(res.json().accessToken).toBeUndefined();
+      }
+
+      // And the façade per-identifier verify cap is what actually governs brute
+      // force: 5 wrong façade attempts, then 429 (survives across challenges).
+      const { challengeId } = await freshChallenge(email);
+      let saw429 = false;
+      for (let i = 0; i < 8; i++) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/auth/verify',
+          payload: { challengeId, code: '111111' }, // wrong
+        });
+        if (res.statusCode === 429) {
+          saw429 = true;
+          expect(res.json()).toMatchObject({ error: { code: 'rate_limited', status: 429 } });
+          break;
+        }
+        expect(res.statusCode).not.toBe(200);
+      }
+      expect(saw429).toBe(true);
+    });
+
+    it('GET /auth/get-session stays PUBLIC (not an OTP/session-mint surface)', async () => {
+      // Unauthenticated get-session is reachable (returns null), not 403 — it
+      // does not mint an OTP session and app routes use requireSession anyway.
+      const res = await app.inject({ method: 'GET', url: '/auth/get-session' });
+      expect(res.statusCode).not.toBe(403);
+    });
+  });
+
+  // --- Finding 6 (regression): façade EMAIL + PHONE OTP still succeed ----------
+  // Denying the raw routes must NOT regress the legitimate façade flows, which
+  // drive the SAME BA endpoints in-process via auth.api.* (not over HTTP).
+  describe('façade OTP flows still succeed end-to-end after raw-route denial', () => {
+    it('email OTP sign-in via /auth/start + /auth/verify → session + /users/me 200', async () => {
+      const email = mkEmail('facade-email');
+      const { token, userId } = await signIn(email);
+      expect(typeof token).toBe('string');
+      expect(token.length).toBeGreaterThan(0);
+      expect(typeof userId).toBe('string');
+      // Token is a real, usable session.
+      const refresh = await app.inject({
+        method: 'POST',
+        url: '/auth/refresh',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(refresh.statusCode).toBe(200);
+      expect(typeof refresh.json().accessToken).toBe('string');
+    });
+
+    it('phone OTP sign-in via /auth/start + /auth/verify → session + /users/me 200', async () => {
+      const phone = mkPhone();
+      const { token, userId } = await signInPhone(phone);
+      expect(typeof token).toBe('string');
+      expect(token.length).toBeGreaterThan(0);
+      expect(typeof userId).toBe('string');
+      const me = await app.inject({
+        method: 'GET',
+        url: '/users/me',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(me.statusCode).toBe(200);
     });
   });
 });
