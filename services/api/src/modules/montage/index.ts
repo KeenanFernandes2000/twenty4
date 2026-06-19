@@ -51,6 +51,7 @@ import {
   montageResponseSchema,
   montageGeneratingResponseSchema,
   montageOptionsResponseSchema,
+  downloadUrlResponseSchema,
   type MontageResponse,
 } from '@twenty4/contracts/dto';
 import { THEMES, type Theme } from '@twenty4/contracts/enums';
@@ -336,6 +337,41 @@ export const montageModule: FastifyPluginAsync = async (app) => {
 
     reply.code(200);
     return toMontageResponse(row);
+  });
+
+  /* -------------------------- GET /montages/:id/download-url ---------------- */
+  // OWNER-ONLY signed GET for the rendered montage MP4 (§11.10 save-to-gallery /
+  // Q7). A non-owner (or missing) montage → 404 (owner-scoped, no existence leak).
+  // Serves the PUBLISHED (or reviewable draft_ready) render; expired/deleted/
+  // not-yet-rendered → 404. TTL clamped to the montage's remaining lifetime so a
+  // leaked URL 404s once the montage expires/purges (§6/§11).
+  app.get('/:id/download-url', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.user!;
+    const row = await loadOwnedOr404(id, me.id);
+
+    // Gone / terminal → 404 (no content, §6).
+    if (
+      row.status === 'expired' ||
+      row.status === 'deleted_by_user' ||
+      row.status === 'removed_by_admin'
+    ) {
+      throw errors.notFound('montage not found');
+    }
+    // Must be rendered to have bytes to download (draft_ready or published).
+    if (
+      (row.status !== 'published' && row.status !== 'draft_ready') ||
+      !row.videoPath
+    ) {
+      throw errors.notFound('montage not available for download');
+    }
+
+    const { url, expiresIn } = await presignGet(buckets.montages, row.videoPath, {
+      expiryAt: montageExpiry(row),
+    });
+
+    reply.code(200);
+    return downloadUrlResponseSchema.parse({ downloadUrl: url, expiresIn });
   });
 
   /* ---------------------------- POST /montages/:id/regenerate --------------- */

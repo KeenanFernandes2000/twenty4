@@ -24,7 +24,7 @@ import { groupsModule, invitesModule } from './modules/groups/index.js';
 import { mediaModule } from './modules/media/index.js';
 import { montageModule } from './modules/montage/index.js';
 import { feedModule } from './modules/feed/index.js';
-import { socialModule } from './modules/social/index.js';
+import { socialModule, commentsModule } from './modules/social/index.js';
 import { safetyModule } from './modules/safety/index.js';
 import { adminModule } from './modules/admin/index.js';
 
@@ -140,8 +140,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(invitesModule, { prefix: '/invites' });
   await app.register(mediaModule, { prefix: '/media' });
   await app.register(montageModule, { prefix: '/montages' });
+  // The social surface lives under the SAME /montages prefix per spec §8
+  // (POST/DELETE /montages/:id/reactions, GET/POST /montages/:id/comments, and the
+  // owner DELETE /montages/:id). It owns disjoint paths from the montage module, so
+  // both plugins coexist on the prefix without route collisions. Comment deletion is
+  // a root resource (DELETE /comments/:commentId).
+  await app.register(socialModule, { prefix: '/montages' });
+  await app.register(commentsModule, { prefix: '/comments' });
   await app.register(feedModule, { prefix: '/feed' });
-  await app.register(socialModule, { prefix: '/social' });
   await app.register(safetyModule, { prefix: '/safety' });
   await app.register(adminModule, { prefix: '/admin' });
 

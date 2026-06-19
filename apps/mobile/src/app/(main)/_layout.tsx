@@ -39,6 +39,9 @@ export default function MainLayout() {
         name="feed"
         options={{
           title: 'Feed',
+          // The feed tab is its own Stack (feed/_layout) — index, dark player,
+          // comments modal; hide the tab-level header to avoid a double bar.
+          headerShown: false,
           tabBarIcon: ({ color, size }) => <Ionicons name="albums-outline" color={color} size={size} />,
         }}
       />

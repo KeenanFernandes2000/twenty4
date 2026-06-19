@@ -4,6 +4,9 @@
 import { z } from 'zod';
 import { reactionTypeSchema } from '../enums.js';
 import { cursorPaginationSchema, pageSchema, userSummarySchema } from './_common.js';
+// reactionSummarySchema is defined in feed.ts and re-exported by the dto barrel;
+// imported here (not re-exported) to compose the reaction endpoint responses.
+import { reactionSummarySchema } from './feed.js';
 
 /** POST /montages/{id}/reactions — upsert (one per user per montage, §5). */
 export const upsertReactionRequestSchema = z
@@ -19,6 +22,21 @@ export const reactionResponseSchema = z
   })
   .strict();
 export type ReactionResponse = z.infer<typeof reactionResponseSchema>;
+
+/** POST /montages/{id}/reactions response: the upserted reaction + updated summary. */
+export const upsertReactionResponseSchema = z
+  .object({
+    reaction: reactionResponseSchema,
+    summary: reactionSummarySchema,
+  })
+  .strict();
+export type UpsertReactionResponse = z.infer<typeof upsertReactionResponseSchema>;
+
+/** DELETE /montages/{id}/reactions response: just the updated summary. */
+export const deleteReactionResponseSchema = z
+  .object({ summary: reactionSummarySchema })
+  .strict();
+export type DeleteReactionResponse = z.infer<typeof deleteReactionResponseSchema>;
 
 /** POST /montages/{id}/comments. */
 export const createCommentRequestSchema = z

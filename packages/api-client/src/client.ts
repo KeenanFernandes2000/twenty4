@@ -60,6 +60,18 @@ import type {
   DownloadUrlResponse,
 } from "@twenty4/contracts/dto";
 
+// Slice 6 (feed + social: reactions + comments) DTOs.
+import type {
+  FeedQuery,
+  FeedResponse,
+  UpsertReactionRequest,
+  UpsertReactionResponse,
+  DeleteReactionResponse,
+  CreateCommentRequest,
+  CommentResponse,
+  CommentsResponse,
+} from "@twenty4/contracts/dto";
+
 /** Wire shape of GET /groups/:id/members (array of member rows). */
 export interface GroupMembersResponse {
   items: GroupMemberResponse[];
@@ -327,30 +339,53 @@ export function createApiClient(options: ApiClientOptions) {
           body: input,
           idempotencyKey,
         }),
-      // Owner-only signed download URL (§11.10 / Q7).
+      // Owner-only signed download URL (§11.10 / Q7) — serves the published montage
+      // for save-to-gallery.
       downloadUrl: (id: string) => request<DownloadUrlResponse>(`/montages/${id}/download-url`),
+      // Owner-only hard-delete (pre-expiry): cascades reactions + comments + S3 (204).
+      remove: (id: string) => request<void>(`/montages/${id}`, { method: "DELETE" }),
     },
 
-    // --- feed -----------------------------------------------------------------
+    // --- feed (Slice 6) -------------------------------------------------------
+    // Cursor-paginated (10/page §10), member-group-scoped, block-filtered feed of
+    // TODAY's published, non-expired montages. Pass `nextCursor` from the prior page
+    // to page; optionally narrow to a single member group via `group`.
     feed: {
-      // TODO(slice 6): cursor-paginated feed DTO (10/page §10, block-filtered).
-      list: (cursor?: string) =>
-        request<unknown>("/feed", { query: { cursor, limit: 10 } }),
+      list: (params: FeedQuery = {}) =>
+        request<FeedResponse>("/feed", {
+          query: { group: params.group, cursor: params.cursor, limit: params.limit ?? 10 },
+        }),
     },
 
-    // --- social (reactions + comments) ---------------------------------------
+    // --- social (Slice 6: reactions + comments) ------------------------------
+    // All gated server-side by montage viewability (shared active group + no block
+    // either direction); a montage the caller can't view → 404.
     social: {
-      // TODO(slice 6): reaction + comment DTOs.
-      react: (montageId: string, input: unknown) =>
-        request<unknown>(`/montages/${montageId}/reactions`, { method: "POST", body: input }),
+      /** Upsert the caller's ONE reaction (changing type replaces). Returns the summary. */
+      react: (montageId: string, input: UpsertReactionRequest) =>
+        request<UpsertReactionResponse>(`/montages/${montageId}/reactions`, {
+          method: "POST",
+          body: input,
+        }),
+      /** Remove the caller's reaction (idempotent). Returns the updated summary. */
       unreact: (montageId: string) =>
-        request<void>(`/montages/${montageId}/reactions`, { method: "DELETE" }),
+        request<DeleteReactionResponse>(`/montages/${montageId}/reactions`, {
+          method: "DELETE",
+        }),
+      /** Cursor-paginated comments (oldest-first). */
       listComments: (montageId: string, cursor?: string) =>
-        request<unknown>(`/montages/${montageId}/comments`, { query: { cursor } }),
-      addComment: (montageId: string, input: unknown) =>
-        request<unknown>(`/montages/${montageId}/comments`, { method: "POST", body: input }),
-      deleteComment: (montageId: string, commentId: string) =>
-        request<void>(`/montages/${montageId}/comments/${commentId}`, { method: "DELETE" }),
+        request<CommentsResponse>(`/montages/${montageId}/comments`, {
+          query: { cursor },
+        }),
+      /** Add a comment (length-bounded, rate-limited). */
+      addComment: (montageId: string, input: CreateCommentRequest) =>
+        request<CommentResponse>(`/montages/${montageId}/comments`, {
+          method: "POST",
+          body: input,
+        }),
+      /** Delete a comment (own comment OR the montage owner can remove any). 204. */
+      deleteComment: (commentId: string) =>
+        request<void>(`/comments/${commentId}`, { method: "DELETE" }),
     },
 
     // --- safety (report + block) ---------------------------------------------

@@ -395,3 +395,60 @@ export async function throttleRenderTrigger(args: { userId: string }): Promise<v
     });
   }
 }
+
+/* ------------------------------- social limits ----------------------------- */
+
+/**
+ * Reaction cap (§8 "rate limits on … reaction endpoints"). A reaction is a cheap
+ * write, but the upsert/delete pair is a trivial spam target (toggle a reaction in
+ * a loop). Bound it per user so a runaway client can't hammer the table. Fails
+ * OPEN — reacting is a legitimate, low-stakes social action and the unique
+ * (montage,user) constraint already caps the row count to one per montage; the
+ * limiter only shapes burst churn.
+ */
+export const REACTION_BUCKET = 'social:react:user';
+export const REACTION_MAX = 120; // generous: rapid feed browsing + toggles.
+export const REACTION_WINDOW = 600; // per 10 min.
+
+/** Throttle a reaction upsert/delete per user; 429 over cap (fails open). */
+export async function throttleReaction(args: { userId: string }): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: REACTION_BUCKET,
+    subject: args.userId,
+    max: REACTION_MAX,
+    windowSeconds: REACTION_WINDOW,
+    failClosed: false,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many reactions; slow down', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}
+
+/**
+ * Comment cap (§8 "rate limits on comment endpoints"). Comments are user content;
+ * bound how fast a user can post so comment-spam / flooding a montage is throttled.
+ * Fails OPEN — commenting is legitimate and the length bound + status filter are
+ * the content guards; the limiter only blunts flood bursts. Tighter than the
+ * reaction cap because each comment is a persisted, visible content row.
+ */
+export const COMMENT_BUCKET = 'social:comment:user';
+export const COMMENT_MAX = 60; // per 10 min — ample for real conversation.
+export const COMMENT_WINDOW = 600;
+
+/** Throttle a comment create per user; 429 over cap (fails open). */
+export async function throttleComment(args: { userId: string }): Promise<void> {
+  const res = await consumeFixedWindow({
+    bucket: COMMENT_BUCKET,
+    subject: args.userId,
+    max: COMMENT_MAX,
+    windowSeconds: COMMENT_WINDOW,
+    failClosed: false,
+  });
+  if (!res.allowed) {
+    throw errors.rateLimited('too many comments; slow down', {
+      retryAfter: res.retryAfter,
+    });
+  }
+}
