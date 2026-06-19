@@ -50,6 +50,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cors, {
     origin: true, // reflect request origin; tighten per-env in a later slice.
     credentials: true,
+    // @fastify/cors v11 defaults `methods` to GET,HEAD,POST only — without this
+    // every PATCH/PUT/DELETE preflight from a browser origin is rejected.
+    // (allowedHeaders is left unset so the requested headers are reflected.)
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
   await app.register(sensible);
 
