@@ -8,7 +8,7 @@ On day one: the Bun workspace is scaffolded, Docker compose brings up Postgres 1
 - **In scope:**
   - Bun workspaces layout: `packages/contracts`, `packages/api-client`, `packages/config`, `services/api`, `services/worker`, `apps/mobile`.
   - Tooling: `tsconfig.base.json`, ESLint 9 (flat), Prettier, `bunfig.toml`, root `package.json` workspaces.
-  - **Docker compose** for Postgres 16 (citext) + Redis 7 + MinIO, plus a one-shot bucket-creation step (`raw`, `montages`, `thumbnails`). This is the *single* canonical infra story.
+  - **Docker compose** for Postgres 16 (citext) + Redis 7 + MinIO + **Mailpit** (email capture for M2's email-OTP dev transport), plus a one-shot bucket-creation step (`raw`, `montages`, `thumbnails`). This is the *single* canonical infra story.
   - Drizzle wired in `packages/contracts` (`src/db/`), with `enums.ts` in the schema set and a **first migration that prepends `CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;`**.
   - **Pin one physical `drizzle-orm`** (kysely devDep on `contracts` + `.npmrc dedupe-peer-dependents=false` / bun dedupe lever) **before** any auth lands.
   - Env strategy: `.env.example` (incl. `EXPO_PUBLIC_API_URL`), env loading, env bootstrap baked into the repo.
@@ -34,7 +34,8 @@ On day one: the Bun workspace is scaffolded, Docker compose brings up Postgres 1
   - `redis` — `redis:7`, port `6379:6379`.
   - `minio` — `minio/minio`, `command: server /data --console-address ":9001"`, ports `9000:9000` + `9001:9001`, **bound `0.0.0.0`** (default), named volume, `MINIO_ROOT_USER/PASSWORD`.
   - `minio-setup` — one-shot `minio/mc` container that waits for MinIO, sets an alias, and **`mc mb --ignore-existing` the three buckets** (`raw`, `montages`, `thumbnails`).
-- [ ] `.env.example`: `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, bucket names, `API_HOST=0.0.0.0`, `API_PORT`, `EXPO_PUBLIC_API_URL` (with a comment: set to the machine's **LAN/Tailscale IP**, not `127.0.0.1`). Add a short script/README note to copy → `.env`.
+  - `mailpit` — `axllent/mailpit`, ports `1025:1025` (SMTP) + `8025:8025` (web UI). Local email capture for M2's email-OTP dev transport; the Mailpit↔SES swap is `NODE_ENV`-switched in app code (no infra change to go prod).
+- [ ] `.env.example`: `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, bucket names, `API_HOST=0.0.0.0`, `API_PORT`, `EXPO_PUBLIC_API_URL` (with a comment: set to the machine's **LAN/Tailscale IP**, not `127.0.0.1`), and **email envs** `MAILPIT_HOST`/`MAILPIT_PORT` (dev) + `SES_FROM_EMAIL`/`AWS_REGION` (commented, prod — for M2's email-OTP transport). Add a short script/README note to copy → `.env`.
 - [ ] `packages/contracts`: install `drizzle-orm` + `drizzle-kit`; add **`kysely` as a devDep** (the dedupe lever — proves day-one before auth); `src/db/schema/` with an `enums.ts` placeholder included in the drizzle-kit `schema` glob; `drizzle.config.ts`.
 - [ ] First Drizzle migration (`0000_init`) that **hand-prepends** `CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;` (no domain tables yet — extensions + enum scaffolding only).
 - [ ] `services/api`: minimal Fastify-on-Bun app exposing `GET /health` → `{ status: "ok" }`, binding `API_HOST` (`0.0.0.0`) / `API_PORT`.

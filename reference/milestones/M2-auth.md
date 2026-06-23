@@ -14,7 +14,10 @@ Phone **and** email OTP sign-in works end to end on the Android device: a user r
   - **`requireSession`** preHandler + **`requireAdmin`** guard (admin actions written to `audit_log`).
   - **Account-status gate at session creation:** `suspended | banned | deleted` blocked; only `active` may mint a session.
   - **`is_admin` seed from `ADMIN_EMAILS`** env (comma-separated) at account create / on boot.
-  - **Dev OTP transport** = console/log + a **dev-only `GET /auth/dev/last-otp?identifier=`** (gated behind `NODE_ENV !== 'production'` / explicit dev flag).
+  - **OTP delivery transport (dual, per channel):**
+    - **Email OTP → a real email service** following the project's canonical email pattern: **nodemailer → Mailpit in dev**, **SES in prod**, switched by `NODE_ENV`, with a **Handlebars** OTP template compiled at startup. Wired into Better Auth's `emailOTP.sendVerificationOTP`. This is the scaffolding for dropping in SES / SendGrid later with **zero call-site changes**.
+    - **Phone OTP → dev console transport** (`console.log` + dev OTP store) until a real SMS vendor lands (M15).
+    - A **dev-only `GET /auth/dev/last-otp?identifier=`** (gated behind `NODE_ENV !== 'production'` / explicit dev flag) for convenience on both channels.
   - **Per-identifier + per-IP rate limits** with an **env-configurable cap** (`OTP_MAX_PER_IP`, `OTP_MAX_PER_IDENTIFIER`, window envs).
   - User profile endpoints: `POST /users`, `PATCH /users/me`, `DELETE /users/me`.
   - DTOs (Zod) for all of the above in `packages/contracts`.
@@ -22,7 +25,7 @@ Phone **and** email OTP sign-in works end to end on the Android device: a user r
   - **Apple / Google / social login** → **M14** (interface-stubbed only; no provider wiring here).
   - **Contacts discovery** (`POST /users/me/contacts-discovery`) → onboarding work, not this milestone.
   - **Notification prefs endpoints** (`GET/PATCH /users/me/notification-prefs`) → **M11**.
-  - **Real SMS/email transport** (SES/Resend/SMS vendor) → launch hardening (**M15**); transport is a throwing stub in prod until then.
+  - **Real SMS transport for phone OTP** (Twilio / SNS) → launch hardening (**M15**); phone OTP uses a dev **console** transport until then. *(Email OTP transport is built **in** this milestone — Mailpit in dev, SES-ready for prod — see §3.)*
   - **Account-deletion purge mechanics** (S3 + cascade jobs) → **M9**. `DELETE /users/me` here marks the account `deleted` and revokes sessions; the purge job is M9's.
   - **Groups / membership authz** → **M3**.
 
@@ -33,7 +36,8 @@ Phone **and** email OTP sign-in works end to end on the Android device: a user r
 - [ ] **DTOs (`packages/contracts`):** `AuthStartReq` (`{ identifier, channel: 'phone'|'email' }`), `AuthVerifyReq` (`{ identifier, channel, code }`), `AuthRefreshReq`, `SessionDTO`, `UserDTO`, `CreateUserReq`, `UpdateMeReq`. Export via the contracts barrel.
 - [ ] **Better Auth config (`services/api/.../auth/betterAuth.ts`):** Drizzle adapter; plugins `phoneNumber`, `emailOTP`, `bearer`; **BA field mapping uses Drizzle PROPERTY names** (`name: 'displayName'`, not `'display_name'`). Set `advanced.generateId` to special-case `user`/`users` → `false` (let PG generate the uuid). Configure session store = PG, revocable.
 - [ ] **Phone-OTP signup:** provide `signUpOnVerification.getTempEmail` / `getTempName` so phone-only signup doesn't 500.
-- [ ] **OTP transport (`auth/otpTransport.ts`):** dev = `console.log` + write last OTP to a dev store (in-memory or Redis key) for `/auth/dev/last-otp`. Prod = **throwing stub** (flag as open until M15). Note phone OTP is **plaintext-at-rest** (accepted P1 limit); email OTP hashed by BA.
+- [ ] **Email service (`services/api/.../services/email.service.ts`)** — per the project's email-setup pattern: dual transport (nodemailer → **Mailpit** when `NODE_ENV !== 'production'`, **SES** otherwise), Handlebars templates compiled once at startup, `stripHtml` plain-text fallback. Add an `otp.hbs` template branded with the **Ember** tokens (dark header, gradient CTA). Export `sendOtpEmail(email, { code, ttlMinutes })`.
+- [ ] **OTP transport (`auth/otpTransport.ts`)** — routes by channel: **email** → `sendOtpEmail` (**await + surface failure** to the caller — OTP send is *not* fire-and-forget; the user must learn if it failed); **phone** → `console.log` + write last OTP to a dev store (Redis key) for `/auth/dev/last-otp`; real SMS deferred to M15. Wire BA `emailOTP.sendVerificationOTP` → the email path. Note phone OTP is **plaintext-at-rest** (accepted P1 limit); email OTP hashed by BA.
 - [ ] **`/auth` façade routes:** `start` → `auth.api.sendPhoneOtp` / `sendVerificationOtp` by channel; `verify` → BA verify → run **account-status gate** → mint session; `refresh`; `logout` → revoke session. All four go through the rate-limit preHandlers.
 - [ ] **Account-status gate:** at session-create, load the user's `account_status`; reject `suspended|banned|deleted` with the proper error-envelope code (e.g. `403 ACCOUNT_SUSPENDED` / `ACCOUNT_BANNED` / `ACCOUNT_DELETED`).
 - [ ] **`is_admin` seed:** on account create (and a boot reconciliation pass), set `is_admin = true` where the user's email ∈ `ADMIN_EMAILS`.
@@ -75,7 +79,7 @@ Phone **and** email OTP sign-in works end to end on the Android device: a user r
 ## 7. Tests (live-stack)
 Against real Postgres + Redis (the same live-stack approach from M1):
 - **OTP happy path — phone:** `start(phone)` → fetch code via `/auth/dev/last-otp` → `verify` → asserts a session row exists in PG and the bearer authenticates a guarded route.
-- **OTP happy path — email:** same flow with `channel:'email'`; asserts session minted.
+- **OTP happy path — email:** same flow with `channel:'email'`, reading the code from **Mailpit's REST API** (`GET http://localhost:8025/api/v1/messages`) to assert the email was actually delivered + rendered; asserts session minted.
 - **Guarded route → 401:** call a `requireSession`-protected route with no / invalid / expired / revoked token → `401` with the error envelope.
 - **Raw-BA-OTP route → 403:** POST directly to a Better Auth OTP HTTP path → `403` (must not send an OTP).
 - **Throttle behavior:** exceed `OTP_MAX_PER_IP` and `OTP_MAX_PER_IDENTIFIER` → `429`; assert the cap is read from env (set a low cap in test to keep it deterministic).
@@ -93,14 +97,14 @@ Against real Postgres + Redis (the same live-stack approach from M1):
 - Rate limits trip at the env-configured caps (per-IP and per-identifier) and return 429.
 - `is_admin` is seeded from `ADMIN_EMAILS`.
 - All §7 tests green.
-- **Android device check:** from the real Android device over LAN/Tailscale, run `POST /auth/start` (phone) → read the OTP from the API logs / `GET /auth/dev/last-otp` → `POST /auth/verify` → use the returned bearer to hit a `requireSession`-guarded endpoint and get a 200; repeat with `channel:'email'`. (No app UI yet — verified via the device's HTTP client / M5 harness.)
+- **Android device check:** from the real Android device over LAN/Tailscale, run `POST /auth/start` (phone) → read the OTP via `GET /auth/dev/last-otp` → `POST /auth/verify` → use the returned bearer to hit a `requireSession`-guarded endpoint and get a 200. Repeat with `channel:'email'`, reading the OTP from the **Mailpit web UI (`http://<LAN-IP>:8025`)** to confirm real delivery. (No app UI yet — verified via the device's HTTP client / M5 harness.)
 
 ## 9. Dependencies & prerequisites
 - **M0:** single physical `drizzle-orm` pinned; `kysely` devDep on `@twenty4/contracts`; dedupe lever set — **must exist before** adding Better Auth.
 - **M1:** error-envelope, `'*'` content-type parser, CORS (POST/PATCH/DELETE), request logging, rate-limit scaffold, DB-verify-on-boot.
-- **Libs:** `better-auth` 1.6.x with `phoneNumber`, `emailOTP`, `bearer` plugins; `drizzle-orm` (pinned); Redis client (rate-limit counters + dev OTP store).
-- **Services:** Postgres (citext + pgcrypto), Redis — running per M0 infra.
-- **Env:** `ADMIN_EMAILS`, `OTP_MAX_PER_IP`, `OTP_MAX_PER_IDENTIFIER`, `OTP_WINDOW_SEC`, `OTP_VERIFY_MAX_ATTEMPTS`, `BETTER_AUTH_SECRET`, `NODE_ENV` (gates the dev OTP route). Add all to `.env.example`.
+- **Libs:** `better-auth` 1.6.x with `phoneNumber`, `emailOTP`, `bearer` plugins; `drizzle-orm` (pinned); Redis client (rate-limit counters + dev OTP store); **`nodemailer` + `handlebars` + `@aws-sdk/client-ses`** (`@types/nodemailer` devDep) for the email transport.
+- **Services:** Postgres (citext + pgcrypto), Redis, **Mailpit** (SMTP `:1025`, web `:8025`) — running per M0 infra (the user already runs Mailpit locally).
+- **Env:** `ADMIN_EMAILS`, `OTP_MAX_PER_IP`, `OTP_MAX_PER_IDENTIFIER`, `OTP_WINDOW_SEC`, `OTP_VERIFY_MAX_ATTEMPTS`, `BETTER_AUTH_SECRET`, `NODE_ENV` (gates the dev OTP route); **email:** `MAILPIT_HOST`/`MAILPIT_PORT` (dev), `SES_FROM_EMAIL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (prod). Add all to `.env.example`.
 
 ## 10. Learnings to apply (from PHASE1_WORK_RECAP.md §5)
 - **drizzle-orm dual-copy clash (§5 Auth):** better-auth pulls `kysely`, which can make `services/api` resolve a *different* physical `drizzle-orm` than `contracts` → incompatible `PgColumn` types. Mitigated by the **M0 lever** (`kysely` devDep on the schema package + `.npmrc dedupe-peer-dependents=false`); this milestone **verifies it before** adding BA.
@@ -114,7 +118,7 @@ Against real Postgres + Redis (the same live-stack approach from M1):
 - **`generateId` + nullable + status gate** together let BA's multi-step create coexist with our `account_status` invariant.
 
 ## 11. Open decisions / flags
-- **OTP transport in prod is a throwing stub** until SMS + email (SES/Resend) are wired — **flagged open, owned by M15.** Dev transport (console + `/auth/dev/last-otp`) is the only working path through MVP.
+- **Email OTP transport is built here** (Mailpit dev → SES prod, one interface); going live only needs SES domain verification + production access (see the email-setup notes), **not** new code. **Phone OTP delivery remains a dev console stub** (`/auth/dev/last-otp`) until an SMS vendor (Twilio / SNS) is wired — **flagged open, owned by M15.**
 - **Phone OTP plaintext-at-rest** — accepted P1 limitation (BA 1.6); revisit in P2.
 - **Apple Sign-In** is mandatory **once any social login ships** (spec §11) — relevant at **M14**, not here; provider auth is interface-stubbed only.
 - **Refresh semantics** — default: rotate the BA session token on `/auth/refresh`; revisit if BA's session model makes rotation a no-op (current default: extend/rotate the existing PG session).

@@ -15,7 +15,7 @@ Individual, detailed planning files for each MVP milestone. Derived from `refere
 | Runtime / PM | **Bun** for API, packages, scripts, tests. **Node** only where unavoidable: Metro (Expo bundling) and Remotion (render). |
 | Local infra | **Docker compose** for Postgres + Redis + MinIO. One canonical infra story (no parallel host-based path). MinIO must still be reachable from the Android device over LAN/Tailscale. |
 | Tests | **Live-stack integration** against real Postgres/Redis/MinIO (the phase-1 approach that caught a real bug nearly every slice). |
-| Auth (MVP) | **Phone + email OTP.** Apple/Google/social deferred to M14. Dev OTP transport = console/log (email optionally via Mailpit). |
+| Auth (MVP) | **Phone + email OTP.** Apple/Google/social deferred to M14. **Email OTP via the canonical email service** (nodemailer → **Mailpit** in dev, **SES**-ready for prod, Handlebars templates, `NODE_ENV`-switched). **Phone OTP via a dev console transport** until an SMS vendor (M15). |
 | Montage | **Remotion from the start** at M7 (no ffmpeg stub). Keep the swappable `Renderer` interface so Lambda is a later drop-in. |
 | Sample media | Provided by the user in a tracked **`fixtures/sample-media/`** folder (~10–30 mixed photos/videos). Used for montage testing in **M6 (import)** and **M7 (render)**. |
 | Design | **Reuse the Ember design tokens** extracted from `reference/Spool.html` (dark theme: colors, fonts, spacing), re-implemented in React Native. |
