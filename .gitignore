@@ -7,8 +7,7 @@ jspm_packages/
 # ───────────────────────── Build output ─────────────────────────
 dist/
 build/
-out/
-lib/
+# NOTE: keep build-output patterns anchored to avoid matching src/lib, src/build, etc.
 *.tsbuildinfo
 .tsbuildinfo
 
