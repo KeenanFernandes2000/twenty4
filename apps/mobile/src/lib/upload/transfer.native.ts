@@ -10,12 +10,51 @@
  * We start a `raw` PUT to the presigned URL, subscribe to progress/completed/
  * error for our `customUploadId`, and resolve/reject accordingly. `cancel` maps
  * to the native cancelUpload.
+ *
+ * FALLBACK: the background-upload native module is only present in a dev/release
+ * build that bundled it — in Expo Go it is absent and `Upload.startUpload` would
+ * throw "cannot read property 'startUpload' of undefined". When the native
+ * module is unavailable we transparently fall back to the STREAMING, disk-backed
+ * expo-file-system PUT (transfer.fileSystem.native.ts), which satisfies the SAME
+ * { done, cancel } contract and reports 0..1 progress WITHOUT loading the whole
+ * file into the JS heap (the old blob fallback OOM'd on large videos in Expo
+ * Go). Real builds keep the background path.
  */
+import { NativeModules } from 'react-native';
 import Upload from 'react-native-background-upload';
 
+import { putFileFileSystem } from './transfer.fileSystem.native';
 import type { PutFile, PutFileHandle } from './transfer';
 
-export const putFile: PutFile = ({
+/**
+ * The background-upload native module registers under different names per OS:
+ * Android → `RNFileUploader`, iOS → `VydiaRNFileUploader`. If neither is present
+ * (Expo Go), the JS `Upload.*` calls would deref `undefined`, so we route to the
+ * foreground fallback instead.
+ */
+const hasBackgroundUploadModule = Boolean(
+  NativeModules.RNFileUploader || NativeModules.VydiaRNFileUploader,
+);
+
+/** Warn once (dev only) when we first take the foreground fallback path. */
+let warnedFallback = false;
+
+export const putFile: PutFile = (opts): PutFileHandle => {
+  if (!hasBackgroundUploadModule) {
+    if (__DEV__ && !warnedFallback) {
+      warnedFallback = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[upload] native background-upload module unavailable — using foreground fallback (expected in Expo Go)',
+      );
+    }
+    return putFileFileSystem(opts);
+  }
+
+  return putFileBackground(opts);
+};
+
+const putFileBackground: PutFile = ({
   url,
   uri,
   contentType,

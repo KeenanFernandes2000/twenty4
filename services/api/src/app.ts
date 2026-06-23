@@ -57,6 +57,24 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   await app.register(sensible);
 
+  // Robustness: some React Native / Expo fetch paths send a request body with a
+  // missing or non-JSON Content-Type. Fastify's default parser only handles
+  // application/json + text/plain, so without this a body-bearing request (e.g. the
+  // POST /media init) is rejected with a blanket 415 before it ever reaches the route.
+  // Parse anything else as a string and JSON.parse it when possible; a non-JSON body
+  // falls through to the route where zod yields a clean 422 instead of a 415.
+  // NOTE: the Better Auth scope registers its OWN '*' parser (src/auth/handler.ts),
+  // which overrides this within that encapsulated scope, so raw Better Auth request
+  // bodies are unaffected by this root parser.
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
+    if (!body) return done(null, undefined);
+    try {
+      done(null, JSON.parse(body as string));
+    } catch {
+      done(null, body);
+    }
+  });
+
   // Route-level HTTP rate limiting (opt-in via config.rateLimit). Registered
   // globally-disabled; the auth façade opts its OTP routes in. Defense-in-depth
   // on top of the explicit Redis counters in lib/rateLimit.ts.
@@ -102,9 +120,11 @@ export async function buildApp(): Promise<FastifyInstance> {
             ? 'forbidden'
             : statusCode === 404
               ? 'not_found'
-              : statusCode === 429
-                ? 'rate_limited'
-                : 'conflict';
+              : statusCode === 415
+                ? 'unsupported_media'
+                : statusCode === 429
+                  ? 'rate_limited'
+                  : 'conflict';
       const mapped = new ApiError(code, (err as Error).message, undefined, statusCode);
       reply.code(mapped.status).send(mapped.toEnvelope());
       return;
