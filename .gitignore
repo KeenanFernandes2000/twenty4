@@ -1,0 +1,90 @@
+# ───────────────────────── Dependencies ─────────────────────────
+node_modules/
+.pnp
+.pnp.*
+jspm_packages/
+
+# ───────────────────────── Build output ─────────────────────────
+dist/
+build/
+out/
+lib/
+*.tsbuildinfo
+.tsbuildinfo
+
+# ───────────────────────── Monorepo tooling ─────────────────────
+.turbo/
+.cache/
+
+# ───────────────────────── Bun ──────────────────────────────────
+# NOTE: bun.lockb IS committed — do not ignore it.
+.bun/
+
+# ───────────────────────── Expo / React Native (apps/mobile) ────
+.expo/
+.expo-shared/
+*.expo/
+web-build/
+# Generated native projects (expo prebuild / run:android)
+apps/mobile/android/
+apps/mobile/ios/
+# Expo / EAS local artifacts
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# ───────────────────────── Remotion / render workers ───────────
+# Local render + validation artifacts (infra/remotion, services/worker)
+.smoke-out/
+.gate-out/
+.harness-out/
+out-render/
+remotion-renders/
+
+# ───────────────────────── Local infra data ────────────────────
+# Postgres / Redis / MinIO local data dirs (no Docker — runs on host)
+infra/**/data/
+*.pid
+*.sock
+
+# ───────────────────────── Environment ─────────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# ───────────────────────── Logs ────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ───────────────────────── Test / coverage ─────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ───────────────────────── Editors / IDEs ──────────────────────
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+# ───────────────────────── OS cruft ────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
