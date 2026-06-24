@@ -88,3 +88,53 @@ docker compose exec postgres psql -U twenty4 -d twenty4 -c "SELECT extname FROM 
 # tear everything down (and wipe volumes)
 docker compose down -v
 ```
+
+---
+
+## Verifying the build (M0–M4 smoke test)
+
+One self-contained script proves milestones **M0–M4** work end-to-end against a
+**running** stack:
+
+```bash
+bun scripts/smoke.ts [--api <url>]      # default --api http://localhost:3000
+```
+
+It creates its own throwaway users / group / media via the real API, exercises
+health + error envelope (M0/M1), dev-OTP auth (M2), groups/invites/membership
+(M3) and the full storage round-trip — init → presigned PUT → complete →
+validation → signed download + byte-compare (M4) — then best-effort deletes the
+group + media it created. It prints a ✅/❌ line per step grouped by milestone and
+exits non-zero if anything fails:
+
+```
+M0–M4: 22/22 checks passed ✅
+```
+
+**Must be up first** (the script does NOT start them):
+
+```bash
+docker compose up -d                    # postgres + redis + minio
+bun services/api/src/index.ts           # API on :3000
+bun services/worker/src/index.ts        # worker — REQUIRED for M4 validation
+```
+
+If the worker isn't running, M0–M3 still report; M4 fails with a clear hint that
+media validation stayed `pending`.
+
+**From the phone** (Termux + Bun) point it at the LAN/Tailscale IP — same command,
+just change `--api` (no fixtures or native modules needed):
+
+```bash
+bun scripts/smoke.ts --api http://100.98.100.117:3000
+```
+
+Notes:
+- Each run uses **fresh phone identifiers** (auto-incrementing counter in the OS
+  temp dir). Pin a fixed base with `--seed <n>` if you need determinism. Account
+  deletion is a soft-delete, so identifiers are never reused.
+- Running the smoke many times within ~15 min can trip the per-IP OTP cap
+  (`OTP_MAX_PER_IP`, default 20 / `OTP_WINDOW_SEC` 900s) — the script reports a
+  clear 429 message; wait for the window or raise the cap in `.env`.
+- Presigned URLs are signed with `S3_PUBLIC_ENDPOINT`; the script asserts the
+  host is **not** localhost, so that must be set to the reachable host.
