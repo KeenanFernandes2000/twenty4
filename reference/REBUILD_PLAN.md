@@ -152,6 +152,15 @@ Each milestone: **Goal · Steps · Deliverable · Android acceptance check**. Sp
 
 ---
 
+### M9.5 — Moments (experimental)  [post-MVP probe]
+- **Goal:** validate whether prompted, synchronized capture beats free-form capture — *before* committing to the full-product track. Opt-in only, fully measurable, removable.
+- **Steps:** per-timezone scheduler fires **5–6 synced prompts/day** (default 6, server-tunable) in a waking-hours window; **minimal push** bundled here (expo-notifications + tokens + a `dispatch-moment` job — reused by M11); **2-min capture window**, late-flagged, miss = gap; the day's moments **are** the montage source (existing M7 review/edit/publish on top); per-user opt-in toggle; analytics to compare opted-in vs normal flow.
+- **Acceptance:** opted-in Android device gets a prompt → captures in-window → it becomes a montage clip → publishes; non-opted-in users unaffected; opt-in / capture-completion / publish rates are queryable.
+- **Flag:** remote push may not work in Expo Go (recent SDKs) → start with on-device local-notification fallback, move to a dev build (M13) if signal is promising.
+- **Full plan:** `reference/milestones/M9.5-moments-experimental.md`.
+
+---
+
 ### M10 — Real montage: Remotion + beat-sync  [P2]
 - **Goal:** swap the stub for the actual magic — **no API/job-contract changes**.
 - **Steps:** stand up Remotion single-worker render (`renderMedia`, queue-fed, Node); real **Intelligence**: TS/WASM beat detection (§6 decision) + per-clip heuristic scoring (motion/sharpness/face/brightness) + beat-aligned cutting → EDL; theme styling (Chill/Party/Clean/Travel/Random/Fast Cut/Soft); music picker from licensed library (~15 bundled tracks, no user audio); transitions/overlays; validate on **50 mixed items + a track** (spec Appendix A gate).

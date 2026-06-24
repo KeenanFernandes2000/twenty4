@@ -93,5 +93,8 @@ Anything still needing a call (with the current default).
 | M7 | `M7-montage.md` | Remotion render pipeline (BullMQ) → generate → review → publish |
 | M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments |
 | M9 | `M9-ephemerality.md` | 24h hard-delete contract: expire/cleanup jobs, replace flow |
+| M9.5 | `M9.5-moments-experimental.md` | **(experimental, post-MVP)** opt-in BeReal-style synced daily prompts that feed the montage — built to evaluate, removable |
 
 🧪 **Thin core loop** demonstrable at end of M8 · ✅ **MVP / Phase-1 Alpha** complete at end of M9.
+
+> **M9.5 is an experiment, not part of the MVP.** It runs *after* M9 and *before* the M10+ full-product track, behind a per-user opt-in, to validate whether prompted synchronized capture is worth keeping. See its file for the design + evaluation plan.
