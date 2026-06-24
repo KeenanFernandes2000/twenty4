@@ -81,19 +81,19 @@ Anything still needing a call (with the current default).
 
 ## Milestone index
 
-| # | File | Goal |
-|---|---|---|
-| M0 | `M0-foundations.md` | Bun monorepo + Docker infra + Android↔backend networking proven |
-| M1 | `M1-api-skeleton.md` | Fastify-on-Bun base: health, DB-verify, error envelope, content-type, CORS |
-| M2 | `M2-auth.md` | Better Auth phone + email OTP, sessions, guards |
-| M3 | `M3-groups.md` | Private groups + invite/join + membership authz |
-| M4 | `M4-storage-upload.md` | Presigned direct-PUT, day-bucket, validation — device-verified |
-| M5 | `M5-mobile-shell.md` | Expo Go app on Android: routing, API client, auth + group screens |
-| M6 | `M6-capture-today.md` | Camera + gallery import, today bucket, upload-progress UI |
-| M7 | `M7-montage.md` | Remotion render pipeline (BullMQ) → generate → review → publish |
-| M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments |
-| M9 | `M9-ephemerality.md` | 24h hard-delete contract: expire/cleanup jobs, replace flow |
-| M9.5 | `M9.5-moments-experimental.md` | **(experimental, post-MVP)** opt-in BeReal-style synced daily prompts that feed the montage — built to evaluate, removable |
+| # | File | Goal | Status |
+|---|---|---|---|
+| M0 | `M0-foundations.md` | Bun monorepo + Docker infra + Android↔backend networking proven | ✅ done (`fd71436`) — device-accepted |
+| M1 | `M1-api-skeleton.md` | Fastify-on-Bun base: health, DB-verify, error envelope, content-type, CORS | ✅ done (`0997717`) — device-accepted |
+| M2 | `M2-auth.md` | Better Auth phone + email OTP, sessions, guards | ⬜ next |
+| M3 | `M3-groups.md` | Private groups + invite/join + membership authz | ⬜ |
+| M4 | `M4-storage-upload.md` | Presigned direct-PUT, day-bucket, validation — device-verified | ⬜ |
+| M5 | `M5-mobile-shell.md` | Expo Go app on Android: routing, API client, auth + group screens | ⬜ |
+| M6 | `M6-capture-today.md` | Camera + gallery import, today bucket, upload-progress UI | ⬜ |
+| M7 | `M7-montage.md` | Remotion render pipeline (BullMQ) → generate → review → publish | ⬜ |
+| M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments | ⬜ |
+| M9 | `M9-ephemerality.md` | 24h hard-delete contract: expire/cleanup jobs, replace flow | ⬜ |
+| M9.5 | `M9.5-moments-experimental.md` | **(experimental, post-MVP)** opt-in BeReal-style synced daily prompts that feed the montage — built to evaluate, removable | ⬜ |
 
 🧪 **Thin core loop** demonstrable at end of M8 · ✅ **MVP / Phase-1 Alpha** complete at end of M9.
 

@@ -1,6 +1,16 @@
 # M0 — Foundations
 > Spec phase: P1 · Depends on: none (first milestone) · Branch commit: one squashed commit on `rebuild/v2` ("M0: bun monorepo + docker infra + device↔backend ping")
 
+## ✅ Status: IMPLEMENTED & ACCEPTED (2026-06-24)
+Built on `rebuild/v2` — commit `fd71436` (+ `5045905` script centralization). **All acceptance criteria met, including the on-device check.**
+
+- **Verified (live stack):** `bun install` clean; `docker compose up` → Postgres 16/citext, Redis 7, MinIO (buckets `raw`/`montages`/`thumbnails`), Mailpit all healthy; `0000_init` applied → `citext` + `pgcrypto` present; `bun run dev` → `GET /health` 200 `{"status":"ok"}`; `bun test` green; exactly one physical `drizzle-orm` (kysely devDep + `.npmrc` dedupe lever in place).
+- **Android device (required):** ✅ phone reaches `GET /health` over LAN/Tailscale — confirmed working on real hardware.
+- **Deviations from plan (documented):**
+  - **Docker IS available** on this WSL box, so the canonical infra is `docker-compose.yml` (the "no-Docker fallback" flag was not needed).
+  - **Host ports remapped: Postgres `5433`→container 5432, Redis `6380`→6379.** Under Docker Desktop + WSL2, Windows-side Postgres/Redis shadow `localhost:5432`/`6379`, so a host-run API would hit the wrong service. MinIO 9000/9001 + Mailpit 1025/8025 are unshadowed. `.env`/`RUNNING.md` updated accordingly.
+  - All run commands live in the **root `package.json`** (child packages are script-free) so Bun loads the single root `.env`.
+
 ## 1. Goal
 On day one: the Bun workspace is scaffolded, Docker compose brings up Postgres 16 (citext) + Redis 7 + MinIO (with `raw`/`montages`/`thumbnails` buckets created), the API boots, and a **real Android device on Expo Go's network reaches `GET /health` over LAN/Tailscale and sees the JSON response.** Networking is proven first, not last.
 
@@ -23,30 +33,30 @@ On day one: the Bun workspace is scaffolded, Docker compose brings up Postgres 1
   - Mobile app code beyond verifying the device can reach the backend → **M5**.
 
 ## 3. Tasks (ordered checklist)
-- [ ] `git checkout -b rebuild/v2` off `main`.
-- [ ] Root `package.json` with Bun `workspaces`: `packages/*`, `services/*`, `apps/*`.
-- [ ] `bunfig.toml` (test runner config, registry); `.npmrc` with `dedupe-peer-dependents=false`.
-- [ ] `tsconfig.base.json` (ES2022, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `moduleResolution: bundler`); per-package `tsconfig.json` extending it.
-- [ ] `packages/config`: shared ESLint flat config + Prettier config, consumed by every workspace.
-- [ ] Scaffold each workspace with `package.json` whose `main` → `src/index.ts` (TS source, **no build step**): `packages/contracts`, `packages/api-client`, `services/api`, `services/worker`, `apps/mobile`.
-- [ ] **`docker-compose.yml`** (single canonical file at repo root) with services:
+- [x] `git checkout -b rebuild/v2` off `main`.
+- [x] Root `package.json` with Bun `workspaces`: `packages/*`, `services/*`, `apps/*`.
+- [x] `bunfig.toml` (test runner config, registry); `.npmrc` with `dedupe-peer-dependents=false`.
+- [x] `tsconfig.base.json` (ES2022, `strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `moduleResolution: bundler`); per-package `tsconfig.json` extending it.
+- [x] `packages/config`: shared ESLint flat config + Prettier config, consumed by every workspace.
+- [x] Scaffold each workspace with `package.json` whose `main` → `src/index.ts` (TS source, **no build step**): `packages/contracts`, `packages/api-client`, `services/api`, `services/worker`, `apps/mobile`.
+- [x] **`docker-compose.yml`** (single canonical file at repo root) with services:
   - `postgres` — `postgres:16`, env `POSTGRES_DB/USER/PASSWORD`, port `5432:5432`, named volume.
   - `redis` — `redis:7`, port `6379:6379`.
   - `minio` — `minio/minio`, `command: server /data --console-address ":9001"`, ports `9000:9000` + `9001:9001`, **bound `0.0.0.0`** (default), named volume, `MINIO_ROOT_USER/PASSWORD`.
   - `minio-setup` — one-shot `minio/mc` container that waits for MinIO, sets an alias, and **`mc mb --ignore-existing` the three buckets** (`raw`, `montages`, `thumbnails`).
   - `mailpit` — `axllent/mailpit`, ports `1025:1025` (SMTP) + `8025:8025` (web UI). Local email capture for M2's email-OTP dev transport; the Mailpit↔SES swap is `NODE_ENV`-switched in app code (no infra change to go prod).
-- [ ] `.env.example`: `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, bucket names, `API_HOST=0.0.0.0`, `API_PORT`, `EXPO_PUBLIC_API_URL` (with a comment: set to the machine's **LAN/Tailscale IP**, not `127.0.0.1`), and **email envs** `MAILPIT_HOST`/`MAILPIT_PORT` (dev) + `SES_FROM_EMAIL`/`AWS_REGION` (commented, prod — for M2's email-OTP transport). Add a short script/README note to copy → `.env`.
-- [ ] `packages/contracts`: install `drizzle-orm` + `drizzle-kit`; add **`kysely` as a devDep** (the dedupe lever — proves day-one before auth); `src/db/schema/` with an `enums.ts` placeholder included in the drizzle-kit `schema` glob; `drizzle.config.ts`.
-- [ ] First Drizzle migration (`0000_init`) that **hand-prepends** `CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;` (no domain tables yet — extensions + enum scaffolding only).
-- [ ] `services/api`: minimal Fastify-on-Bun app exposing `GET /health` → `{ status: "ok" }`, binding `API_HOST` (`0.0.0.0`) / `API_PORT`.
-- [ ] Verify `bun run dev` (API) boots and `curl http://localhost:$API_PORT/health` returns 200 from the host.
-- [ ] Create `fixtures/sample-media/` with a `README.md`: "Drop ~10–30 mixed photos/videos (JPG/PNG/HEIC, MP4/MOV) here. Used by M6 (import) and M7 (render) tests. Git-tracked folder, contents gitignored."
-- [ ] **Device-networking checklist** (run as a unit, document in `RUNNING.md`):
+- [x] `.env.example`: `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, bucket names, `API_HOST=0.0.0.0`, `API_PORT`, `EXPO_PUBLIC_API_URL` (with a comment: set to the machine's **LAN/Tailscale IP**, not `127.0.0.1`), and **email envs** `MAILPIT_HOST`/`MAILPIT_PORT` (dev) + `SES_FROM_EMAIL`/`AWS_REGION` (commented, prod — for M2's email-OTP transport). Add a short script/README note to copy → `.env`.
+- [x] `packages/contracts`: install `drizzle-orm` + `drizzle-kit`; add **`kysely` as a devDep** (the dedupe lever — proves day-one before auth); `src/db/schema/` with an `enums.ts` placeholder included in the drizzle-kit `schema` glob; `drizzle.config.ts`.
+- [x] First Drizzle migration (`0000_init`) that **hand-prepends** `CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;` (no domain tables yet — extensions + enum scaffolding only).
+- [x] `services/api`: minimal Fastify-on-Bun app exposing `GET /health` → `{ status: "ok" }`, binding `API_HOST` (`0.0.0.0`) / `API_PORT`.
+- [x] Verify `bun run dev` (API) boots and `curl http://localhost:$API_PORT/health` returns 200 from the host.
+- [x] Create `fixtures/sample-media/` with a `README.md`: "Drop ~10–30 mixed photos/videos (JPG/PNG/HEIC, MP4/MOV) here. Used by M6 (import) and M7 (render) tests. Git-tracked folder, contents gitignored."
+- [x] **Device-networking checklist** (run as a unit, document in `RUNNING.md`):
   - API binds `0.0.0.0` (not loopback).
   - `EXPO_PUBLIC_API_URL` set to the LAN/Tailscale IP.
   - WSL2: `networkingMode=mirrored` in `.wslconfig` (+ `wsl --shutdown`) **or** a `netsh portproxy` fallback.
   - MinIO bound `0.0.0.0` and reachable from the phone (`http://<LAN-IP>:9000/minio/health/live`).
-- [ ] **Acceptance:** open `http://<LAN-IP>:$API_PORT/health` in the phone's browser (or a one-line fetch in Expo) and see the `{ status: "ok" }` response on the device.
+- [x] **Acceptance:** open `http://<LAN-IP>:$API_PORT/health` in the phone's browser (or a one-line fetch in Expo) and see the `{ status: "ok" }` response on the device.
 
 ## 4. Data model & migrations
 - Migration `0000_init`: **only** the extension bootstrap (`citext`, `pgcrypto`) and the empty `enums.ts` wiring so `drizzle-kit` is proven to emit `CREATE TYPE` when enums are added later. No domain tables (those land per-milestone from M2).

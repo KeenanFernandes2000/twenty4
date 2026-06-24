@@ -1,6 +1,18 @@
 # M1 — API Skeleton
 > Spec phase: P1 · Depends on: M0 (monorepo + Docker infra + device↔backend ping) · Branch commit: one squashed commit on `rebuild/v2` ("M1: fastify-on-bun base — health, db-verify, error envelope, content-type, CORS")
 
+## ✅ Status: IMPLEMENTED & ACCEPTED (2026-06-24)
+Built on `rebuild/v2` — commit `0997717` (+ `5045905` script centralization). **All acceptance criteria met, including the on-device check.**
+
+- **Verified (live stack, 25 tests green):**
+  - `GET /health` → 200 `{"status":"ok"}`; `GET /healthz` → 200 `{"status":"ok","db":"up"}` (DB up) / 503 (DB down).
+  - **Content-type regression:** missing / `application/octet-stream` / non-JSON body reaches the route — **never spurious 415** (incl. an empty-`Content-Type` `onRequest` strip + a 4xx→422 envelope backstop).
+  - **Real-socket CORS preflight:** `OPTIONS` for PATCH/PUT/DELETE over a true socket (`fastify.listen` + `undici`) returns the correct `Access-Control-Allow-Methods` — the inject-blind-spot that slipped v1 is now covered.
+  - **Fail-fast:** DB-unreachable boot exits non-zero (`SELECT 1` verify); missing env var or prod placeholder-secret refuses to boot (Zod env + prod-secret guard).
+  - Error envelope `{ error: { code, status, message } }` for unknown routes (NOT_FOUND/404) and Zod-invalid bodies (VALIDATION_FAILED/422), no internal leakage. pino logging redacts `authorization`/`cookie`. Rate-limit registered global-disabled. Idempotent SIGINT/SIGTERM graceful shutdown. `tsc` + `eslint` clean.
+- **Android device (required):** ✅ phone hits `GET /healthz` (200) and a no-`Content-Type` POST returns a clean non-415 envelope over LAN/Tailscale — confirmed on real hardware.
+- **Deviations (minor, documented):** added an empty-`Content-Type` strip hook + a 4xx→422 backstop (Fastify v5 415s on present-but-empty CT); added `DB_CONNECT_TIMEOUT` (default 5s) so the fail-fast test resolves fast; test env loader walks up to the root `.env`. A small `POST /_echo` route exists as the content-type/device-acceptance target.
+
 ## 1. Goal
 A correct, boring Fastify-on-Bun base that won't surprise us later: liveness + readiness, DB-verify-on-boot (fail fast), Drizzle wired, fail-fast Zod env (with a prod-secret guard), a global error envelope `{ error: { code, status, message } }` backed by a contracts error taxonomy, the root `'*'` content-type parser so RN/Expo bodies never spuriously 415, an explicit CORS method list (incl. PATCH/PUT/DELETE/OPTIONS) verified by a **real preflight test**, request logging, graceful shutdown, and a registered-but-disabled rate-limit scaffold.
 
@@ -25,21 +37,21 @@ A correct, boring Fastify-on-Bun base that won't surprise us later: liveness + r
   - Storage presign / S3 client → **M4**.
 
 ## 3. Tasks (ordered checklist)
-- [ ] `packages/contracts`: add `src/errors/` — an **error taxonomy** (e.g. `UNAUTHORIZED`/401, `FORBIDDEN`/403, `NOT_FOUND`/404, `VALIDATION_FAILED`/422, `RATE_LIMITED`/429, `INTERNAL`/500, plus a base `AppError` carrying `{ code, status, message }`). Export Zod-typed error envelope shape `{ error: { code, status, message } }`.
-- [ ] `packages/contracts`: add `src/env/` — a Zod env schema (DB/Redis/S3/host/port/secrets) used by every service.
-- [ ] `services/api`: at startup, **parse env via the contracts Zod schema; exit non-zero on failure**. Add a **prod-secret guard**: if `NODE_ENV=production` and any secret matches a known dev/placeholder value (or is empty), throw before listen.
-- [ ] `services/api`: create the Drizzle DB client (postgres.js) from `DATABASE_URL`.
-- [ ] `services/api`: **DB-verify-on-boot** — run `SELECT 1` before `listen`; on failure, log + `process.exit(1)` (fail fast).
-- [ ] `services/api`: register the **root `'*'` content-type parser** (parse-as-string → `try { JSON.parse } catch { raw }`). Ensure any future encapsulated auth `'*'` parser (M2 Better Auth) is unaffected.
-- [ ] `services/api`: register **`@fastify/cors`** with an **explicit `methods` array** (`GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS`) + `allowedHeaders` (`content-type`, `authorization`), origin policy appropriate for dev (reflect/allow LAN origins).
-- [ ] `services/api`: enable `trustProxy: true`.
-- [ ] `services/api`: configure **pino request logging** (method, path, status, response time; redact `authorization`/`cookie`).
-- [ ] `services/api`: register a **global error handler** that maps `AppError` → its `{ code, status }`, maps Zod errors → `VALIDATION_FAILED`/422, and unknown errors → `INTERNAL`/500 (no leakage), all in the `{ error: { code, status, message } }` envelope.
-- [ ] `services/api`: routes `GET /health` (process up) and `GET /healthz` (DB reachable → 200, else 503).
-- [ ] `services/api`: register **`@fastify/rate-limit` global-disabled** (`global: false`), so routes can opt in later.
-- [ ] `services/api`: **graceful shutdown** hooks — on `SIGINT`/`SIGTERM`, `app.close()` then close (placeholder) BullMQ queues, Redis client, and the postgres.js pool; idempotent; bounded timeout.
-- [ ] Write the live-stack tests in §7 (including the **real CORS preflight** test).
-- [ ] Run the suite green against the M0 Docker compose stack.
+- [x] `packages/contracts`: add `src/errors/` — an **error taxonomy** (e.g. `UNAUTHORIZED`/401, `FORBIDDEN`/403, `NOT_FOUND`/404, `VALIDATION_FAILED`/422, `RATE_LIMITED`/429, `INTERNAL`/500, plus a base `AppError` carrying `{ code, status, message }`). Export Zod-typed error envelope shape `{ error: { code, status, message } }`.
+- [x] `packages/contracts`: add `src/env/` — a Zod env schema (DB/Redis/S3/host/port/secrets) used by every service.
+- [x] `services/api`: at startup, **parse env via the contracts Zod schema; exit non-zero on failure**. Add a **prod-secret guard**: if `NODE_ENV=production` and any secret matches a known dev/placeholder value (or is empty), throw before listen.
+- [x] `services/api`: create the Drizzle DB client (postgres.js) from `DATABASE_URL`.
+- [x] `services/api`: **DB-verify-on-boot** — run `SELECT 1` before `listen`; on failure, log + `process.exit(1)` (fail fast).
+- [x] `services/api`: register the **root `'*'` content-type parser** (parse-as-string → `try { JSON.parse } catch { raw }`). Ensure any future encapsulated auth `'*'` parser (M2 Better Auth) is unaffected.
+- [x] `services/api`: register **`@fastify/cors`** with an **explicit `methods` array** (`GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS`) + `allowedHeaders` (`content-type`, `authorization`), origin policy appropriate for dev (reflect/allow LAN origins).
+- [x] `services/api`: enable `trustProxy: true`.
+- [x] `services/api`: configure **pino request logging** (method, path, status, response time; redact `authorization`/`cookie`).
+- [x] `services/api`: register a **global error handler** that maps `AppError` → its `{ code, status }`, maps Zod errors → `VALIDATION_FAILED`/422, and unknown errors → `INTERNAL`/500 (no leakage), all in the `{ error: { code, status, message } }` envelope.
+- [x] `services/api`: routes `GET /health` (process up) and `GET /healthz` (DB reachable → 200, else 503).
+- [x] `services/api`: register **`@fastify/rate-limit` global-disabled** (`global: false`), so routes can opt in later.
+- [x] `services/api`: **graceful shutdown** hooks — on `SIGINT`/`SIGTERM`, `app.close()` then close (placeholder) BullMQ queues, Redis client, and the postgres.js pool; idempotent; bounded timeout.
+- [x] Write the live-stack tests in §7 (including the **real CORS preflight** test).
+- [x] Run the suite green against the M0 Docker compose stack.
 
 ## 4. Data model & migrations
 - None (no new domain tables). The M0 `0000_init` extension bootstrap is the only migration. M1 adds the error taxonomy + env schema as **TS contracts**, not DB objects.
