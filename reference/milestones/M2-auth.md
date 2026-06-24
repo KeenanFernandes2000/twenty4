@@ -1,6 +1,12 @@
 # M2 — Auth
 > Spec phase: P1 · Depends on: M0 (foundations, drizzle single-copy + dedupe lever), M1 (API skeleton: error envelope, content-type parser, CORS, rate-limit scaffold) · Branch commit: one commit on `rebuild/v2`
 
+## ✅ Status: BACKEND IMPLEMENTED & HARDENED (2026-06-24)
+Built on `rebuild/v2` — commit `d34e512`. Backend complete; live-stack tests green. **On-device acceptance pending** (the user runs it).
+- **Verified:** 52 `bun test` green incl. phone OTP + email-via-Mailpit happy paths, guarded-route 401, raw-BA-OTP 403, per-IP + per-identifier 429 throttle, suspended/banned/deleted denied, requireAdmin + audit_log, is_admin seed, logout-revokes. Single physical drizzle-orm preserved post-better-auth. lint + tsc clean. Migration `0001_auth` applied.
+- **Adversarial hardening applied** (the v1 functional→hardening rhythm): account_status enforced on EVERY guarded request + `/auth/refresh` (was sign-in only — a suspended/banned/deleted bearer is now immediately locked out); per-IP OTP key off the socket addr (not spoofable `X-Forwarded-For`); identifier canonicalized (email lower/trim, phone +digits) before keying rate/verify counters + Better Auth (closes OTP brute-force / cap-bypass via case/format variants); deny-list case/slash-insensitive.
+- **Pending (device):** §8 — from the phone over LAN/Tailscale: `/auth/start` (phone) → `/auth/dev/last-otp` → `/auth/verify` → guarded 200; repeat email channel reading the OTP from Mailpit web UI `http://<LAN-IP>:8025`.
+
 ## 1. Goal
 Phone **and** email OTP sign-in works end to end on the Android device: a user requests an OTP for a phone number or email, verifies it, and receives a Postgres-backed (revocable) session. A `requireSession` preHandler gates protected routes; suspended/banned/deleted accounts cannot create sessions; raw Better Auth OTP HTTP routes are denied (403) so all OTP traffic funnels through one throttled `/auth` façade.
 
@@ -30,24 +36,24 @@ Phone **and** email OTP sign-in works end to end on the Android device: a user r
   - **Groups / membership authz** → **M3**.
 
 ## 3. Tasks (ordered checklist)
-- [ ] **Pre-flight (verify M0 lever):** confirm one physical `drizzle-orm` resolves across `services/api` and `packages/contracts` (`bun pm ls drizzle-orm` / dedupe check). Confirm `kysely` is a devDep on `@twenty4/contracts` and the dedupe flag is set. **Do not** add Better Auth until this is green.
-- [ ] **Schema (`packages/contracts/src/db/`):** add `user` table + Better Auth `session`, `account`, `verification` tables; add `auth_provider` and `account_status` pgEnums to `enums.ts`. Make `display_name`/`username` **nullable** (BA multi-step create). Add `is_admin boolean default false`. **Do not** add an email-or-phone PG CHECK (enforce at app layer).
-- [ ] **Migration:** generate Drizzle migration; confirm `enums.ts` is in the `schema` set so `CREATE TYPE` is emitted; confirm the first migration still prepends `CREATE EXTENSION citext, pgcrypto` (from M1). Apply + verify.
-- [ ] **DTOs (`packages/contracts`):** `AuthStartReq` (`{ identifier, channel: 'phone'|'email' }`), `AuthVerifyReq` (`{ identifier, channel, code }`), `AuthRefreshReq`, `SessionDTO`, `UserDTO`, `CreateUserReq`, `UpdateMeReq`. Export via the contracts barrel.
-- [ ] **Better Auth config (`services/api/.../auth/betterAuth.ts`):** Drizzle adapter; plugins `phoneNumber`, `emailOTP`, `bearer`; **BA field mapping uses Drizzle PROPERTY names** (`name: 'displayName'`, not `'display_name'`). Set `advanced.generateId` to special-case `user`/`users` → `false` (let PG generate the uuid). Configure session store = PG, revocable.
-- [ ] **Phone-OTP signup:** provide `signUpOnVerification.getTempEmail` / `getTempName` so phone-only signup doesn't 500.
-- [ ] **Email service (`services/api/.../services/email.service.ts`)** — per the project's email-setup pattern: dual transport (nodemailer → **Mailpit** when `NODE_ENV !== 'production'`, **SES** otherwise), Handlebars templates compiled once at startup, `stripHtml` plain-text fallback. Add an `otp.hbs` template branded with the **Ember** tokens (dark header, gradient CTA). Export `sendOtpEmail(email, { code, ttlMinutes })`.
-- [ ] **OTP transport (`auth/otpTransport.ts`)** — routes by channel: **email** → `sendOtpEmail` (**await + surface failure** to the caller — OTP send is *not* fire-and-forget; the user must learn if it failed); **phone** → `console.log` + write last OTP to a dev store (Redis key) for `/auth/dev/last-otp`; real SMS deferred to M15. Wire BA `emailOTP.sendVerificationOTP` → the email path. Note phone OTP is **plaintext-at-rest** (accepted P1 limit); email OTP hashed by BA.
-- [ ] **`/auth` façade routes:** `start` → `auth.api.sendPhoneOtp` / `sendVerificationOtp` by channel; `verify` → BA verify → run **account-status gate** → mint session; `refresh`; `logout` → revoke session. All four go through the rate-limit preHandlers.
-- [ ] **Account-status gate:** at session-create, load the user's `account_status`; reject `suspended|banned|deleted` with the proper error-envelope code (e.g. `403 ACCOUNT_SUSPENDED` / `ACCOUNT_BANNED` / `ACCOUNT_DELETED`).
-- [ ] **`is_admin` seed:** on account create (and a boot reconciliation pass), set `is_admin = true` where the user's email ∈ `ADMIN_EMAILS`.
-- [ ] **Deny raw BA OTP HTTP routes (403):** register a Fastify preHandler/hook denying the BA OTP HTTP paths (send/verify for both phone + email-otp, ~the known BA OTP path set) so they can't bypass the throttle. The façade uses `auth.api.*` in-process and is unaffected.
-- [ ] **`requireSession` preHandler:** resolve bearer/session token → attach `request.user`; 401 (error envelope) when absent/invalid/expired/revoked.
-- [ ] **`requireAdmin` guard:** requires `requireSession` + `request.user.is_admin === true`; every admin action writes an `audit_log` row (`actor_id`, `action`, `target_*`, `metadata`). 403 otherwise.
-- [ ] **Rate limits:** per-IP and per-identifier counters (Redis) on `/auth/start` (and verify-attempt cap), caps from env (`OTP_MAX_PER_IP`, `OTP_MAX_PER_IDENTIFIER`, `OTP_WINDOW_SEC`); env-configurable so CI is deterministic.
-- [ ] **User endpoints:** `POST /users` (create profile post-verify; enforce email-or-phone present at app layer; unique citext `username`), `PATCH /users/me` (display_name/username/photo), `DELETE /users/me` (mark `deleted` + revoke sessions; purge deferred to M9).
-- [ ] **Wire all routes** behind the error envelope + content-type parser + CORS (incl. POST/PATCH/DELETE) from M1.
-- [ ] **Tests** (see §7) green against the live stack.
+- [x] **Pre-flight (verify M0 lever):** confirm one physical `drizzle-orm` resolves across `services/api` and `packages/contracts` (`bun pm ls drizzle-orm` / dedupe check). Confirm `kysely` is a devDep on `@twenty4/contracts` and the dedupe flag is set. **Do not** add Better Auth until this is green.
+- [x] **Schema (`packages/contracts/src/db/`):** add `user` table + Better Auth `session`, `account`, `verification` tables; add `auth_provider` and `account_status` pgEnums to `enums.ts`. Make `display_name`/`username` **nullable** (BA multi-step create). Add `is_admin boolean default false`. **Do not** add an email-or-phone PG CHECK (enforce at app layer).
+- [x] **Migration:** generate Drizzle migration; confirm `enums.ts` is in the `schema` set so `CREATE TYPE` is emitted; confirm the first migration still prepends `CREATE EXTENSION citext, pgcrypto` (from M1). Apply + verify.
+- [x] **DTOs (`packages/contracts`):** `AuthStartReq` (`{ identifier, channel: 'phone'|'email' }`), `AuthVerifyReq` (`{ identifier, channel, code }`), `AuthRefreshReq`, `SessionDTO`, `UserDTO`, `CreateUserReq`, `UpdateMeReq`. Export via the contracts barrel.
+- [x] **Better Auth config (`services/api/.../auth/betterAuth.ts`):** Drizzle adapter; plugins `phoneNumber`, `emailOTP`, `bearer`; **BA field mapping uses Drizzle PROPERTY names** (`name: 'displayName'`, not `'display_name'`). Set `advanced.generateId` to special-case `user`/`users` → `false` (let PG generate the uuid). Configure session store = PG, revocable.
+- [x] **Phone-OTP signup:** provide `signUpOnVerification.getTempEmail` / `getTempName` so phone-only signup doesn't 500.
+- [x] **Email service (`services/api/.../services/email.service.ts`)** — per the project's email-setup pattern: dual transport (nodemailer → **Mailpit** when `NODE_ENV !== 'production'`, **SES** otherwise), Handlebars templates compiled once at startup, `stripHtml` plain-text fallback. Add an `otp.hbs` template branded with the **Ember** tokens (dark header, gradient CTA). Export `sendOtpEmail(email, { code, ttlMinutes })`.
+- [x] **OTP transport (`auth/otpTransport.ts`)** — routes by channel: **email** → `sendOtpEmail` (**await + surface failure** to the caller — OTP send is *not* fire-and-forget; the user must learn if it failed); **phone** → `console.log` + write last OTP to a dev store (Redis key) for `/auth/dev/last-otp`; real SMS deferred to M15. Wire BA `emailOTP.sendVerificationOTP` → the email path. Note phone OTP is **plaintext-at-rest** (accepted P1 limit); email OTP hashed by BA.
+- [x] **`/auth` façade routes:** `start` → `auth.api.sendPhoneOtp` / `sendVerificationOtp` by channel; `verify` → BA verify → run **account-status gate** → mint session; `refresh`; `logout` → revoke session. All four go through the rate-limit preHandlers.
+- [x] **Account-status gate:** at session-create, load the user's `account_status`; reject `suspended|banned|deleted` with the proper error-envelope code (e.g. `403 ACCOUNT_SUSPENDED` / `ACCOUNT_BANNED` / `ACCOUNT_DELETED`).
+- [x] **`is_admin` seed:** on account create (and a boot reconciliation pass), set `is_admin = true` where the user's email ∈ `ADMIN_EMAILS`.
+- [x] **Deny raw BA OTP HTTP routes (403):** register a Fastify preHandler/hook denying the BA OTP HTTP paths (send/verify for both phone + email-otp, ~the known BA OTP path set) so they can't bypass the throttle. The façade uses `auth.api.*` in-process and is unaffected.
+- [x] **`requireSession` preHandler:** resolve bearer/session token → attach `request.user`; 401 (error envelope) when absent/invalid/expired/revoked.
+- [x] **`requireAdmin` guard:** requires `requireSession` + `request.user.is_admin === true`; every admin action writes an `audit_log` row (`actor_id`, `action`, `target_*`, `metadata`). 403 otherwise.
+- [x] **Rate limits:** per-IP and per-identifier counters (Redis) on `/auth/start` (and verify-attempt cap), caps from env (`OTP_MAX_PER_IP`, `OTP_MAX_PER_IDENTIFIER`, `OTP_WINDOW_SEC`); env-configurable so CI is deterministic.
+- [x] **User endpoints:** `POST /users` (create profile post-verify; enforce email-or-phone present at app layer; unique citext `username`), `PATCH /users/me` (display_name/username/photo), `DELETE /users/me` (mark `deleted` + revoke sessions; purge deferred to M9).
+- [x] **Wire all routes** behind the error envelope + content-type parser + CORS (incl. POST/PATCH/DELETE) from M1.
+- [x] **Tests** (see §7) green against the live stack.
 
 ## 4. Data model & migrations
 **Tables touched:**

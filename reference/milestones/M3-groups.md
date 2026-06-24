@@ -2,6 +2,12 @@
 
 > Spec phase: P1 · Depends on: M0 (foundations), M1 (API skeleton: error envelope, content-type, CORS, rate-limit scaffold), M2 (Better Auth sessions + `requireSession` guard) · Branch commit: one squashed commit on `rebuild/v2`
 
+## ✅ Status: BACKEND IMPLEMENTED & HARDENED (2026-06-24)
+Built on `rebuild/v2` — commit `b7c666a`. Backend complete; live-stack tests green. **On-device acceptance pending** (the user runs it).
+- **Verified:** 67 `bun test` green incl. create→invite→preview→join happy path, non-member 403 (NOT_A_MEMBER) / non-owner 403 (NOT_OWNER), the **30-way concurrent-join race** (no use_count overshoot), invite expiry (time + use-count) + revoke (idempotent), already-member no-consume, rate limits. Single shared authz module (`assertMemberOf`/`assertOwnerOf`) gates all 12 routes. lint + tsc clean. Migration `0002_groups` applied.
+- **Adversarial hardening applied:** the invite-join is now ONE `FOR UPDATE`-locked transaction — fixes a TOCTOU where a `left`/`removed` user firing concurrent rejoins drained N invite uses for one membership (proven: 1 user burned 10 uses); archived group rejected pre-increment (refund hack removed); expiry classified on the DB clock. Added regression tests: same-user concurrent-rejoin single-consume, archived-group join reject, IDOR cross-group revoke/remove, PATCH mass-assignment ignored.
+- **Pending (device):** §8 — from the phone (two identifiers): owner creates group + mints invite; joiner previews then joins via code; `GET /groups` shows it; a non-member request returns 403.
+
 ## 1. Goal
 
 A signed-in user can create a private group, mint an owner-revocable invite code (valid for **7 days OR 25 uses**, whichever first), and any other signed-in user can preview that invite and join. Every group-scoped read/write is authorized against active membership: a non-member gets a clean `403`. This milestone is **backend-only** — the mobile group screens land in M5.
@@ -29,25 +35,25 @@ A signed-in user can create a private group, mint an owner-revocable invite code
 
 ## 3. Tasks (ordered checklist)
 
-- [ ] Add `group`, `group_invite`, `group_member` tables + the `group_role`, `group_status`, `group_member_status` pgEnums to `packages/contracts/src/db/` (and ensure `enums.ts` is in the drizzle-kit `schema` set so `CREATE TYPE` is emitted).
-- [ ] Generate + check in the migration; confirm `PK(group_id,user_id)` on `group_member`, `unique(code)` on `group_invite`, and supporting indexes (`group_member.user_id` for list-mine; partial index on live invites).
-- [ ] Add Zod DTOs + the error-taxonomy codes (`NOT_A_MEMBER`, `NOT_OWNER`, `INVITE_NOT_FOUND`, `INVITE_EXPIRED`, `INVITE_USED_UP`, `INVITE_REVOKED`, `ALREADY_MEMBER`, `GROUP_NOT_FOUND`, `CANNOT_REMOVE_SELF`, `CANNOT_REMOVE_OWNER`) to `packages/contracts`.
-- [ ] Write the authz helpers `assertMemberOf` / `assertOwnerOf` as a shared module (single source — no per-route reimplementation; this is the §5 bypass learning).
-- [ ] Implement `POST /groups` — creates group, inserts creator as `owner`/`active` membership **in one transaction**.
-- [ ] Implement `GET /groups` (mine) — only groups where caller has an `active` membership.
-- [ ] Implement `GET /groups/{id}` — `assertMemberOf`, returns group + caller's role + member count.
-- [ ] Implement `PATCH /groups/{id}` — owner-only; rename and/or set `photo_url` (validate URL/asset ref).
-- [ ] Implement `DELETE /groups/{id}` — owner-only.
-- [ ] Implement `POST /groups/{id}/invites` — owner-only; generate collision-checked URL-safe code; set `expires_at`/`max_uses`/`use_count=0`; **rate-limited**.
-- [ ] Implement `DELETE /groups/{id}/invites/{id}` — owner-only revoke (idempotent set of `revoked_at`).
-- [ ] Implement `GET /invites/{code}` — auth-gated preview; resolves validity (revoked / expired / used-up) and returns group summary, never joins.
-- [ ] Implement `POST /invites/{code}/join` — **race-safe**: single conditional `UPDATE ... SET use_count = use_count + 1 WHERE code = $1 AND revoked_at IS NULL AND expires_at > now() AND use_count < max_uses RETURNING ...`, then upsert membership; `ALREADY_MEMBER` short-circuits *without* consuming a use; **rate-limited**.
-- [ ] Implement `GET /groups/{id}/members` — members-only list.
-- [ ] Implement `DELETE /groups/{id}/members/{userId}` — owner-only; reject self-removal (`CANNOT_REMOVE_SELF`) and owner-removal (`CANNOT_REMOVE_OWNER`); set membership `status=removed`.
-- [ ] Implement `POST /groups/{id}/leave` — caller leaves (`status=left`); owner cannot leave without transfer (flag in §11; default: reject `OWNER_CANNOT_LEAVE`).
-- [ ] Register routes under the group module; wire `requireSession` on all; wire invite rate-limits.
-- [ ] Delete the dead `safetyModule`-style stubs pattern from the start (do not re-introduce empty modules — §6 recap).
-- [ ] Write the live-stack integration suite (§7) and get it green.
+- [x] Add `group`, `group_invite`, `group_member` tables + the `group_role`, `group_status`, `group_member_status` pgEnums to `packages/contracts/src/db/` (and ensure `enums.ts` is in the drizzle-kit `schema` set so `CREATE TYPE` is emitted).
+- [x] Generate + check in the migration; confirm `PK(group_id,user_id)` on `group_member`, `unique(code)` on `group_invite`, and supporting indexes (`group_member.user_id` for list-mine; partial index on live invites).
+- [x] Add Zod DTOs + the error-taxonomy codes (`NOT_A_MEMBER`, `NOT_OWNER`, `INVITE_NOT_FOUND`, `INVITE_EXPIRED`, `INVITE_USED_UP`, `INVITE_REVOKED`, `ALREADY_MEMBER`, `GROUP_NOT_FOUND`, `CANNOT_REMOVE_SELF`, `CANNOT_REMOVE_OWNER`) to `packages/contracts`.
+- [x] Write the authz helpers `assertMemberOf` / `assertOwnerOf` as a shared module (single source — no per-route reimplementation; this is the §5 bypass learning).
+- [x] Implement `POST /groups` — creates group, inserts creator as `owner`/`active` membership **in one transaction**.
+- [x] Implement `GET /groups` (mine) — only groups where caller has an `active` membership.
+- [x] Implement `GET /groups/{id}` — `assertMemberOf`, returns group + caller's role + member count.
+- [x] Implement `PATCH /groups/{id}` — owner-only; rename and/or set `photo_url` (validate URL/asset ref).
+- [x] Implement `DELETE /groups/{id}` — owner-only.
+- [x] Implement `POST /groups/{id}/invites` — owner-only; generate collision-checked URL-safe code; set `expires_at`/`max_uses`/`use_count=0`; **rate-limited**.
+- [x] Implement `DELETE /groups/{id}/invites/{id}` — owner-only revoke (idempotent set of `revoked_at`).
+- [x] Implement `GET /invites/{code}` — auth-gated preview; resolves validity (revoked / expired / used-up) and returns group summary, never joins.
+- [x] Implement `POST /invites/{code}/join` — **race-safe**: single conditional `UPDATE ... SET use_count = use_count + 1 WHERE code = $1 AND revoked_at IS NULL AND expires_at > now() AND use_count < max_uses RETURNING ...`, then upsert membership; `ALREADY_MEMBER` short-circuits *without* consuming a use; **rate-limited**.
+- [x] Implement `GET /groups/{id}/members` — members-only list.
+- [x] Implement `DELETE /groups/{id}/members/{userId}` — owner-only; reject self-removal (`CANNOT_REMOVE_SELF`) and owner-removal (`CANNOT_REMOVE_OWNER`); set membership `status=removed`.
+- [x] Implement `POST /groups/{id}/leave` — caller leaves (`status=left`); owner cannot leave without transfer (flag in §11; default: reject `OWNER_CANNOT_LEAVE`).
+- [x] Register routes under the group module; wire `requireSession` on all; wire invite rate-limits.
+- [x] Delete the dead `safetyModule`-style stubs pattern from the start (do not re-introduce empty modules — §6 recap).
+- [x] Write the live-stack integration suite (§7) and get it green.
 
 ## 4. Data model & migrations
 
