@@ -9,10 +9,13 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "bun run --cwd services/api dev",
-    "dev:api": "bun run --cwd services/api dev",
-    "db:generate": "bun run --cwd packages/contracts db:generate",
-    "db:migrate": "bun run --cwd packages/contracts db:migrate",
+    "dev": "bun --watch services/api/src/index.ts",
+    "dev:api": "bun --watch services/api/src/index.ts",
+    "start": "bun services/api/src/index.ts",
+    "dev:worker": "bun --watch services/worker/src/index.ts",
+    "start:worker": "bun services/worker/src/index.ts",
+    "db:generate": "cd packages/contracts && drizzle-kit generate",
+    "db:migrate": "cd packages/contracts && drizzle-kit migrate",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "bun test"
