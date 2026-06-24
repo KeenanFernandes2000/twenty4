@@ -1,0 +1,11 @@
+# Bun configuration — twenty4 monorepo
+# Internal packages are consumed as TS source (main → src/index.ts), no build step.
+
+[test]
+# Run *.test.ts / *.spec.ts under each workspace. Live-stack tests (M0: contracts smoke).
+root = "."
+coverage = false
+
+[install]
+# Keep a single physical copy of shared deps (drizzle-orm) — see .npmrc dedupe lever.
+exact = false

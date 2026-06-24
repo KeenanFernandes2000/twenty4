@@ -55,6 +55,12 @@ infra/**/data/
 !.env.example
 !.env.sample
 
+# ───────────────────────── Sample-media fixtures ───────────────
+# Folder is git-tracked; contents gitignored except the README.
+# Used by M6 (import) and M7 (render gate).
+fixtures/sample-media/*
+!fixtures/sample-media/README.md
+
 # ───────────────────────── Logs ────────────────────────────────
 *.log
 logs/

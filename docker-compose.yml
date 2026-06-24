@@ -1,0 +1,85 @@
+# twenty4 — single canonical infra story.
+# Brings up Postgres 16 (citext) + Redis 7 + MinIO (raw/montages/thumbnails) + Mailpit.
+# All services bind 0.0.0.0 on the host so a real device on the LAN/Tailscale net
+# can reach them. See RUNNING.md for the device-networking checklist.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: twenty4
+      POSTGRES_USER: twenty4
+      POSTGRES_PASSWORD: twenty4
+    # Host port 5433 (not 5432): under Docker Desktop + WSL2, a Windows-side
+    # Postgres shadows localhost:5432, so a host-run API would hit the WRONG db.
+    # Container still listens on 5432; only the published host port differs.
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twenty4 -d twenty4"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # Host port 6380 (not 6379): a Windows-side / native Redis shadows
+    # localhost:6379 under Docker Desktop + WSL2. Container still listens on 6379.
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: waits for MinIO healthy, sets an alias, creates the three buckets.
+  minio-setup:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/raw &&
+      mc mb --ignore-existing local/montages &&
+      mc mb --ignore-existing local/thumbnails &&
+      echo 'buckets ready:' && mc ls local
+      "
+    restart: "no"
+
+  # Local email capture for M2's email-OTP dev transport (SMTP :1025, web UI :8025).
+  # The Mailpit -> SES swap is NODE_ENV-switched in app code; no infra change to go prod.
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  pgdata:
+  miniodata:

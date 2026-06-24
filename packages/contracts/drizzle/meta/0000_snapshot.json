@@ -1,0 +1,26 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {},
+  "enums": {
+    "public.scaffold_status": {
+      "name": "scaffold_status",
+      "schema": "public",
+      "values": [
+        "ok"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "id": "ce77e7d3-5047-49d0-9492-c01d1dd3c7e1",
+  "prevId": "8df2ee87-aded-4915-b3eb-ce96cca272b3"
+}
