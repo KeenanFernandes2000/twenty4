@@ -18,6 +18,18 @@ export const ERROR_CODES = [
   "ACCOUNT_DELETED",
   // Conflict (M2): e.g. username already taken on POST /users.
   "CONFLICT",
+  // ── Groups (M3) ────────────────────────────────────────────────────────────
+  "NOT_A_MEMBER", // 403 — caller has no active membership in the group
+  "NOT_OWNER", // 403 — caller is not the group's owner
+  "INVITE_NOT_FOUND", // 404 — no invite for the given code
+  "INVITE_EXPIRED", // 410 — past expires_at
+  "INVITE_USED_UP", // 403 — use_count >= max_uses
+  "INVITE_REVOKED", // 403 — revoked_at is set
+  "ALREADY_MEMBER", // 409 — caller is already an active member
+  "GROUP_NOT_FOUND", // 404 — no group for the given id
+  "CANNOT_REMOVE_SELF", // 400 — owner tried to remove themselves
+  "CANNOT_REMOVE_OWNER", // 400 — tried to remove the owner row
+  "OWNER_CANNOT_LEAVE", // 400 — owner must DELETE the group, not leave
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -34,6 +46,18 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   ACCOUNT_BANNED: 403,
   ACCOUNT_DELETED: 403,
   CONFLICT: 409,
+  // ── Groups (M3) ────────────────────────────────────────────────────────────
+  NOT_A_MEMBER: 403,
+  NOT_OWNER: 403,
+  INVITE_NOT_FOUND: 404,
+  INVITE_EXPIRED: 410,
+  INVITE_USED_UP: 403,
+  INVITE_REVOKED: 403,
+  ALREADY_MEMBER: 409,
+  GROUP_NOT_FOUND: 404,
+  CANNOT_REMOVE_SELF: 400,
+  CANNOT_REMOVE_OWNER: 400,
+  OWNER_CANNOT_LEAVE: 400,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -126,6 +150,84 @@ export class ConflictError extends AppError {
   constructor(message = "Conflict") {
     super("CONFLICT", message);
     this.name = "ConflictError";
+  }
+}
+
+// ── Groups (M3) ──────────────────────────────────────────────────────────────
+export class NotAMemberError extends AppError {
+  constructor(message = "You are not a member of this group") {
+    super("NOT_A_MEMBER", message);
+    this.name = "NotAMemberError";
+  }
+}
+
+export class NotOwnerError extends AppError {
+  constructor(message = "Only the group owner may perform this action") {
+    super("NOT_OWNER", message);
+    this.name = "NotOwnerError";
+  }
+}
+
+export class InviteNotFoundError extends AppError {
+  constructor(message = "Invite not found") {
+    super("INVITE_NOT_FOUND", message);
+    this.name = "InviteNotFoundError";
+  }
+}
+
+export class InviteExpiredError extends AppError {
+  constructor(message = "Invite has expired") {
+    super("INVITE_EXPIRED", message);
+    this.name = "InviteExpiredError";
+  }
+}
+
+export class InviteUsedUpError extends AppError {
+  constructor(message = "Invite has reached its maximum uses") {
+    super("INVITE_USED_UP", message);
+    this.name = "InviteUsedUpError";
+  }
+}
+
+export class InviteRevokedError extends AppError {
+  constructor(message = "Invite has been revoked") {
+    super("INVITE_REVOKED", message);
+    this.name = "InviteRevokedError";
+  }
+}
+
+export class AlreadyMemberError extends AppError {
+  constructor(message = "You are already a member of this group") {
+    super("ALREADY_MEMBER", message);
+    this.name = "AlreadyMemberError";
+  }
+}
+
+export class GroupNotFoundError extends AppError {
+  constructor(message = "Group not found") {
+    super("GROUP_NOT_FOUND", message);
+    this.name = "GroupNotFoundError";
+  }
+}
+
+export class CannotRemoveSelfError extends AppError {
+  constructor(message = "Use leave to remove yourself; owners cannot self-remove") {
+    super("CANNOT_REMOVE_SELF", message);
+    this.name = "CannotRemoveSelfError";
+  }
+}
+
+export class CannotRemoveOwnerError extends AppError {
+  constructor(message = "The group owner cannot be removed") {
+    super("CANNOT_REMOVE_OWNER", message);
+    this.name = "CannotRemoveOwnerError";
+  }
+}
+
+export class OwnerCannotLeaveError extends AppError {
+  constructor(message = "The owner cannot leave; delete the group instead") {
+    super("OWNER_CANNOT_LEAVE", message);
+    this.name = "OwnerCannotLeaveError";
   }
 }
 

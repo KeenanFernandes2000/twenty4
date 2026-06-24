@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError, NotFoundError, toErrorEnvelope, type Env, type ErrorEnvelope } from "@twenty4/contracts";
 import { registerAuth } from "./auth/index.ts";
+import { registerGroups } from "./groups/index.ts";
 import type { DbClient } from "./db.ts";
 import type { RedisClient } from "./redis.ts";
 
@@ -191,7 +192,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // ── M2 auth subsystem (/auth + /users) ─────────────────────────────────────
   // Registered only when redis + env are provided (M1-only tests skip it).
   if (opts.redis && opts.env) {
-    await registerAuth(app, { db, redis: opts.redis, env: opts.env });
+    const { auth } = await registerAuth(app, { db, redis: opts.redis, env: opts.env });
+    // ── M3 groups subsystem (/groups + /invites) — reuses the BA auth instance
+    // for requireSession. Registered only alongside auth (M1-only tests skip it).
+    await registerGroups(app, { db, redis: opts.redis, env: opts.env, auth });
   }
 
   return app;

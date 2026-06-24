@@ -6,3 +6,4 @@ export * from "./db/schema/index.ts";
 export * from "./errors/index.ts";
 export * from "./env/index.ts";
 export * from "./dto/auth.ts";
+export * from "./dto/groups.ts";

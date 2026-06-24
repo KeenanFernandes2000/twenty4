@@ -25,3 +25,24 @@ export const authProvider = pgEnum("auth_provider", ["phone", "email", "apple", 
  * `active`; suspended/banned/deleted are rejected with a 403 envelope code.
  */
 export const accountStatus = pgEnum("account_status", ["active", "suspended", "banned", "deleted"]);
+
+// ── M3 groups ────────────────────────────────────────────────────────────────
+/**
+ * Group lifecycle. `DELETE /groups/{id}` soft-archives (status=archived) per the
+ * M3 §11 default — hard-delete cascade waits until content tables (M4–M9) land.
+ */
+export const groupStatus = pgEnum("group_status", ["active", "archived"]);
+
+/**
+ * Membership role. `admin` exists in the enum but is inert in MVP (Q12) — only
+ * `owner` exercises management powers. Kept so post-MVP promote/transfer is a
+ * data change, not a migration.
+ */
+export const groupRole = pgEnum("group_role", ["owner", "admin", "member"]);
+
+/**
+ * Membership lifecycle. `active` is the only state that satisfies assertMemberOf;
+ * `left` (self-leave) and `removed` (owner-removed) are both inactive and can be
+ * reactivated by re-joining via a valid invite (consumes a use).
+ */
+export const groupMemberStatus = pgEnum("group_member_status", ["active", "left", "removed"]);

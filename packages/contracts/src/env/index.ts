@@ -54,6 +54,14 @@ export const envSchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((v) => (v === undefined ? undefined : v === "true")),
+
+  // ── Invite throttle caps (M3) ───────────────────────────────────────────────
+  // Per-(user) fixed-window caps on invite create + join, env-configurable so CI
+  // can set low caps for deterministic 429 tests (the §5 OTP-cap learning applied
+  // to invites). Optional-with-defaults so M1 fail-fast still passes.
+  INVITE_CREATE_CAP: z.coerce.number().int().min(1).default(30),
+  INVITE_JOIN_CAP: z.coerce.number().int().min(1).default(60),
+  INVITE_WINDOW_SEC: z.coerce.number().int().min(1).default(900),
 });
 
 export type Env = z.infer<typeof envSchema>;

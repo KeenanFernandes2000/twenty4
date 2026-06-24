@@ -4,3 +4,4 @@
 // M2 adds the auth tables (user + BA session/account/verification + audit_log).
 export * from "./enums.ts";
 export * from "./auth.ts";
+export * from "./groups.ts";
