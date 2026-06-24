@@ -52,6 +52,11 @@ export const user = pgTable(
     authProvider: authProvider("auth_provider").notNull().default("email"),
     accountStatus: accountStatus("account_status").notNull().default("active"),
     isAdmin: boolean("is_admin").notNull().default(false),
+    // Canonical (server-anchored) IANA timezone for day_bucket resolution (M4
+    // HIGH-3). Set on the FIRST media init if unset; bucketing always uses THIS
+    // value, never the raw per-request deviceTimezone, so a client cannot multiply
+    // their daily cap by rotating zones. Nullable until first set.
+    timezone: text("timezone"),
     notificationPrefs: jsonb("notification_prefs").notNull().default(sql`'{}'::jsonb`),
     privacySettings: jsonb("privacy_settings").notNull().default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -24,6 +24,25 @@ export const envSchema = z.object({
   S3_BUCKET_RAW: z.string().min(1, "S3_BUCKET_RAW is required"),
   S3_BUCKET_MONTAGES: z.string().min(1, "S3_BUCKET_MONTAGES is required"),
   S3_BUCKET_THUMBNAILS: z.string().min(1, "S3_BUCKET_THUMBNAILS is required"),
+  // ── Media presign (M4) ──────────────────────────────────────────────────────
+  // THE v1 lesson: SigV4 signs the Host header, so a presigned URL signed against
+  // `localhost` is unusable from the phone. The S3 client that SIGNS presigned
+  // PUT/GET URLs uses S3_PUBLIC_ENDPOINT (the LAN/Tailscale host the device hits);
+  // server-side ops (HeadObject/DeleteObject) use the internal S3_ENDPOINT.
+  // Defaults to S3_ENDPOINT when unset so M1 fail-fast / single-host dev still works.
+  S3_PUBLIC_ENDPOINT: z.string().optional(),
+  // Presigned-URL TTLs (seconds). Bounded by content lifetime; short by default.
+  MEDIA_UPLOAD_URL_TTL_SEC: z.coerce.number().int().min(1).default(900),
+  MEDIA_DOWNLOAD_URL_TTL_SEC: z.coerce.number().int().min(1).default(900),
+  // Raw-media safety-backstop TTL in hours (M9 owns the authoritative purge). Sets
+  // expiry_at on the row at init. Default ~26h.
+  MEDIA_RAW_TTL_HOURS: z.coerce.number().int().min(1).default(26),
+  // Per-item byte cap enforced at /complete via HeadObject. Default 200 MB. Env-
+  // overridable so a test can set a tiny cap and exercise the over-size reject
+  // path deterministically without a 200MB upload.
+  MEDIA_MAX_BYTES: z.coerce.number().int().min(1).default(200 * 1024 * 1024),
+  // Per-day item cap enforced at init. Default 50. Env-overridable for tests.
+  MEDIA_MAX_ITEMS_PER_DAY: z.coerce.number().int().min(1).default(50),
 
   // API server.
   API_HOST: z.string().min(1).default("0.0.0.0"),

@@ -30,6 +30,12 @@ export const ERROR_CODES = [
   "CANNOT_REMOVE_SELF", // 400 — owner tried to remove themselves
   "CANNOT_REMOVE_OWNER", // 400 — tried to remove the owner row
   "OWNER_CANNOT_LEAVE", // 400 — owner must DELETE the group, not leave
+  // ── Media (M4) ─────────────────────────────────────────────────────────────
+  "MEDIA_NOT_FOUND", // 404 — no media item for the id (or not the caller's)
+  "MEDIA_TOO_LARGE", // 413 — actual object size exceeds the per-item cap
+  "MEDIA_TYPE_NOT_ALLOWED", // 415 — content-type not in the MIME allowlist
+  "DAILY_LIMIT_REACHED", // 429 — caller already at the per-day item cap
+  "MEDIA_VALIDATION_FAILED", // 422 — /complete HeadObject gate rejected the upload
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -58,6 +64,12 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   CANNOT_REMOVE_SELF: 400,
   CANNOT_REMOVE_OWNER: 400,
   OWNER_CANNOT_LEAVE: 400,
+  // ── Media (M4) ─────────────────────────────────────────────────────────────
+  MEDIA_NOT_FOUND: 404,
+  MEDIA_TOO_LARGE: 413,
+  MEDIA_TYPE_NOT_ALLOWED: 415,
+  DAILY_LIMIT_REACHED: 429,
+  MEDIA_VALIDATION_FAILED: 422,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -228,6 +240,42 @@ export class OwnerCannotLeaveError extends AppError {
   constructor(message = "The owner cannot leave; delete the group instead") {
     super("OWNER_CANNOT_LEAVE", message);
     this.name = "OwnerCannotLeaveError";
+  }
+}
+
+// ── Media (M4) ──────────────────────────────────────────────────────────────
+export class MediaNotFoundError extends AppError {
+  constructor(message = "Media item not found") {
+    super("MEDIA_NOT_FOUND", message);
+    this.name = "MediaNotFoundError";
+  }
+}
+
+export class MediaTooLargeError extends AppError {
+  constructor(message = "Media exceeds the maximum allowed size") {
+    super("MEDIA_TOO_LARGE", message);
+    this.name = "MediaTooLargeError";
+  }
+}
+
+export class MediaTypeNotAllowedError extends AppError {
+  constructor(message = "Media content-type is not allowed") {
+    super("MEDIA_TYPE_NOT_ALLOWED", message);
+    this.name = "MediaTypeNotAllowedError";
+  }
+}
+
+export class DailyLimitReachedError extends AppError {
+  constructor(message = "Daily media limit reached") {
+    super("DAILY_LIMIT_REACHED", message);
+    this.name = "DailyLimitReachedError";
+  }
+}
+
+export class MediaValidationFailedError extends AppError {
+  constructor(message = "Media validation failed") {
+    super("MEDIA_VALIDATION_FAILED", message);
+    this.name = "MediaValidationFailedError";
   }
 }
 

@@ -46,3 +46,40 @@ export const groupRole = pgEnum("group_role", ["owner", "admin", "member"]);
  * reactivated by re-joining via a valid invite (consumes a use).
  */
 export const groupMemberStatus = pgEnum("group_member_status", ["active", "left", "removed"]);
+
+// ── M4 media ─────────────────────────────────────────────────────────────────
+/** What kind of media this item is. */
+export const mediaType = pgEnum("media_type", ["photo", "video"]);
+
+/**
+ * The NARROW validation verdict (M4 §11). Distinct from processing_status: this
+ * is just "did the validate-media job approve this item?" — `pending` until the
+ * worker runs, then a terminal `valid` | `invalid`.
+ */
+export const validationStatus = pgEnum("validation_status", ["pending", "valid", "invalid"]);
+
+/**
+ * The LIFECYCLE state machine (M4 §11). Authoritative transition path:
+ *   uploaded → validating → valid | invalid → used → deleted
+ *   (→ failed on any infra error at any step)
+ * `validation_status` is the narrow verdict the lifecycle *reads* to move from
+ * `validating` to `valid`/`invalid`. Both enums are kept for spec fidelity; revisit
+ * collapsing to one in M7 when `used` is exercised by the render pipeline.
+ *  - uploaded:   row created at POST /media init (presigned PUT issued)
+ *  - validating: /complete passed the HeadObject gate, validate-media enqueued
+ *  - valid:      validate-media approved (validation_status=valid)
+ *  - invalid:    validate-media rejected (validation_status=invalid) OR /complete gate reject
+ *  - used:       consumed by a montage render (M7)
+ *  - deleted:    hard-deleted (DELETE /media/:id) — row is actually removed, this
+ *                state is only ever transient/for completeness
+ *  - failed:     infra error (S3/Redis/db) — distinct from `invalid` (a verdict)
+ */
+export const processingStatus = pgEnum("processing_status", [
+  "uploaded",
+  "validating",
+  "valid",
+  "invalid",
+  "used",
+  "deleted",
+  "failed",
+]);

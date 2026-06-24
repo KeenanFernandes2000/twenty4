@@ -22,6 +22,20 @@
       "when": 1782312520574,
       "tag": "0002_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782313874505,
+      "tag": "0003_daily_media_item",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782315223910,
+      "tag": "0004_user_timezone",
+      "breakpoints": true
     }
   ]
 }

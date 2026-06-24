@@ -11,6 +11,7 @@ import { z } from "zod";
 import { AppError, NotFoundError, toErrorEnvelope, type Env, type ErrorEnvelope } from "@twenty4/contracts";
 import { registerAuth } from "./auth/index.ts";
 import { registerGroups } from "./groups/index.ts";
+import { registerMedia } from "./media/index.ts";
 import type { DbClient } from "./db.ts";
 import type { RedisClient } from "./redis.ts";
 
@@ -22,6 +23,9 @@ export interface BuildAppOptions {
   // /auth + /users routes are simply not registered.
   redis?: RedisClient;
   env?: Env;
+  // M4: optional injected validate-media queue (tests share/inspect one). When
+  // omitted, registerMedia creates a queue from REDIS_URL.
+  mediaQueue?: import("bullmq").Queue<import("./media/queue.ts").ValidateMediaJobData>;
 }
 
 // Explicit CORS method list. v1's bug: @fastify/cors defaults to GET/HEAD/POST,
@@ -196,6 +200,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // ── M3 groups subsystem (/groups + /invites) — reuses the BA auth instance
     // for requireSession. Registered only alongside auth (M1-only tests skip it).
     await registerGroups(app, { db, redis: opts.redis, env: opts.env, auth });
+    // ── M4 media subsystem (/media) — reuses the BA auth instance + S3 + the
+    // validate-media queue. Registered only alongside auth.
+    await registerMedia(app, { db, env: opts.env, auth, queue: opts.mediaQueue });
   }
 
   return app;
