@@ -12,6 +12,12 @@ export const ERROR_CODES = [
   "VALIDATION_FAILED",
   "RATE_LIMITED",
   "INTERNAL",
+  // Account-status gate (M2): session-create denial codes. All 403.
+  "ACCOUNT_SUSPENDED",
+  "ACCOUNT_BANNED",
+  "ACCOUNT_DELETED",
+  // Conflict (M2): e.g. username already taken on POST /users.
+  "CONFLICT",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -24,6 +30,10 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   VALIDATION_FAILED: 422,
   RATE_LIMITED: 429,
   INTERNAL: 500,
+  ACCOUNT_SUSPENDED: 403,
+  ACCOUNT_BANNED: 403,
+  ACCOUNT_DELETED: 403,
+  CONFLICT: 409,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -87,6 +97,35 @@ export class InternalError extends AppError {
   constructor(message = "Internal server error") {
     super("INTERNAL", message);
     this.name = "InternalError";
+  }
+}
+
+// Account-status gate (M2) — one per blocked status. All 403.
+export class AccountSuspendedError extends AppError {
+  constructor(message = "Account suspended") {
+    super("ACCOUNT_SUSPENDED", message);
+    this.name = "AccountSuspendedError";
+  }
+}
+
+export class AccountBannedError extends AppError {
+  constructor(message = "Account banned") {
+    super("ACCOUNT_BANNED", message);
+    this.name = "AccountBannedError";
+  }
+}
+
+export class AccountDeletedError extends AppError {
+  constructor(message = "Account deleted") {
+    super("ACCOUNT_DELETED", message);
+    this.name = "AccountDeletedError";
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(message = "Conflict") {
+    super("CONFLICT", message);
+    this.name = "ConflictError";
   }
 }
 

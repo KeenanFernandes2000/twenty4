@@ -41,6 +41,9 @@ test("prod-secret guard flags placeholder secrets only in production", () => {
     S3_ACCESS_KEY: "minioadmin",
     S3_SECRET_KEY: "Kp9xQ2vL7mNw",
     DATABASE_URL: "postgres://app:Kp9xQ2vL7mNw@db.prod/app",
+    // Provide a strong BETTER_AUTH_SECRET so only the minioadmin S3 key is flagged
+    // (else the M2 dev-default placeholder would also flag, by design).
+    BETTER_AUTH_SECRET: "9d4f1c0b7a2e5f8c3b6a1d0e4f7c2a9b8e5d3c1f0a6b4e2d",
   });
   expect(findPlaceholderSecrets(prod)).toEqual(["S3_ACCESS_KEY"]);
 });

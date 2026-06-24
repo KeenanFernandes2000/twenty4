@@ -34,6 +34,26 @@ export const envSchema = z.object({
   MAILPIT_PORT: port.optional(),
   SES_FROM_EMAIL: z.string().optional(),
   AWS_REGION: z.string().optional(),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+
+  // ── Auth (M2) ──────────────────────────────────────────────────────────────
+  // Better Auth signing secret. Dev default is a placeholder the prod-secret
+  // guard rejects (contains "secret"/"dev"), keeping M1's fail-fast honest while
+  // letting dev/test boot with no extra config.
+  BETTER_AUTH_SECRET: z.string().min(1).default("dev-better-auth-secret-change-me"),
+  // Comma-separated admin emails seeded to is_admin=true.
+  ADMIN_EMAILS: z.string().default(""),
+  // OTP throttle caps (env-configurable so CI is deterministic).
+  OTP_MAX_PER_IP: z.coerce.number().int().min(1).default(20),
+  OTP_MAX_PER_IDENTIFIER: z.coerce.number().int().min(1).default(5),
+  OTP_WINDOW_SEC: z.coerce.number().int().min(1).default(900),
+  OTP_VERIFY_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
+  // Double-gate the dev last-otp route (defaults to dev-on / prod-off via NODE_ENV).
+  ENABLE_DEV_OTP_ROUTE: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -43,6 +63,7 @@ export const SECRET_ENV_KEYS = [
   "DATABASE_URL",
   "S3_ACCESS_KEY",
   "S3_SECRET_KEY",
+  "BETTER_AUTH_SECRET",
 ] as const satisfies readonly (keyof Env)[];
 
 // Known dev/placeholder values that must NEVER be used as a prod secret.

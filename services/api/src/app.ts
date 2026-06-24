@@ -8,13 +8,19 @@ import rateLimit from "@fastify/rate-limit";
 import { sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { AppError, NotFoundError, toErrorEnvelope, type ErrorEnvelope } from "@twenty4/contracts";
+import { AppError, NotFoundError, toErrorEnvelope, type Env, type ErrorEnvelope } from "@twenty4/contracts";
+import { registerAuth } from "./auth/index.ts";
 import type { DbClient } from "./db.ts";
+import type { RedisClient } from "./redis.ts";
 
 export interface BuildAppOptions {
   db: DbClient;
   // NODE_ENV — gates the dev-permissive CORS origin policy.
   nodeEnv?: string;
+  // Redis + env enable the M2 auth subsystem. When omitted (M1-only tests), the
+  // /auth + /users routes are simply not registered.
+  redis?: RedisClient;
+  env?: Env;
 }
 
 // Explicit CORS method list. v1's bug: @fastify/cors defaults to GET/HEAD/POST,
@@ -181,6 +187,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     }
     return { echoed: req.body ?? null };
   });
+
+  // ── M2 auth subsystem (/auth + /users) ─────────────────────────────────────
+  // Registered only when redis + env are provided (M1-only tests skip it).
+  if (opts.redis && opts.env) {
+    await registerAuth(app, { db, redis: opts.redis, env: opts.env });
+  }
 
   return app;
 }

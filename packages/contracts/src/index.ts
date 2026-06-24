@@ -5,3 +5,4 @@ export * as db from "./db/index.ts";
 export * from "./db/schema/index.ts";
 export * from "./errors/index.ts";
 export * from "./env/index.ts";
+export * from "./dto/auth.ts";

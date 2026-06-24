@@ -6,10 +6,12 @@
 import { buildApp } from "./app.ts";
 import { createDb, verifyDb, type DbClient } from "./db.ts";
 import { loadEnv } from "./env.ts";
+import { createRedis, type RedisClient } from "./redis.ts";
 
 export { buildApp } from "./app.ts";
 export { createDb, verifyDb } from "./db.ts";
 export { loadEnv } from "./env.ts";
+export { createRedis } from "./redis.ts";
 
 async function main(): Promise<void> {
   // 1. Fail-fast env (exits non-zero on bad config / prod placeholder secrets).
@@ -28,15 +30,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // 4. Build + listen.
-  const app = await buildApp({ db, nodeEnv: env.NODE_ENV });
+  // 4. Redis client (OTP dev store + rate-limit counters).
+  const redis = createRedis(env.REDIS_URL);
 
-  installShutdown(app, db);
+  // 5. Build + listen (auth subsystem registered inside buildApp).
+  const app = await buildApp({ db, nodeEnv: env.NODE_ENV, redis, env });
+
+  installShutdown(app, db, redis);
 
   try {
     await app.listen({ host: env.API_HOST, port: env.API_PORT });
   } catch (err) {
     app.log.error(err);
+    await redis.quit().catch(() => {});
     await db.sql.end({ timeout: 2 }).catch(() => {});
     process.exit(1);
   }
@@ -46,7 +52,7 @@ async function main(): Promise<void> {
 // On SIGINT/SIGTERM: stop accepting connections (app.close), then close the
 // postgres.js pool. Idempotent; bounded by a hard timeout so a hung handle can't
 // wedge shutdown. Placeholder hooks for BullMQ/Redis (no jobs yet — M7).
-function installShutdown(app: Awaited<ReturnType<typeof buildApp>>, db: DbClient): void {
+function installShutdown(app: Awaited<ReturnType<typeof buildApp>>, db: DbClient, redis: RedisClient): void {
   let closing = false;
   const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -64,7 +70,8 @@ function installShutdown(app: Awaited<ReturnType<typeof buildApp>>, db: DbClient
 
     try {
       await app.close(); // stop accepting connections, drain in-flight.
-      // Placeholder: BullMQ queues + Redis client close here in M7.
+      await redis.quit().catch(() => redis.disconnect()); // close the Redis client.
+      // Placeholder: BullMQ queues close here in M7.
       await db.sql.end({ timeout: 5 }); // close the postgres.js pool.
       clearTimeout(hardTimer);
       app.log.info("graceful shutdown complete");

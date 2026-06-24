@@ -5,16 +5,22 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@aws-sdk/client-ses": "^3.1075.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/rate-limit": "^10.3.0",
     "@twenty4/contracts": "workspace:*",
+    "better-auth": "^1.6.20",
     "drizzle-orm": "^0.44.7",
     "fastify": "^5.6.1",
+    "handlebars": "^4.7.9",
+    "ioredis": "^5.11.1",
+    "nodemailer": "^9.0.1",
     "postgres": "^3.4.7",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@twenty4/config": "workspace:*",
+    "@types/nodemailer": "^8.0.1",
     "undici": "^7.16.0"
   }
 }

@@ -34,6 +34,10 @@ test("ERROR_STATUS is the canonical map", () => {
     VALIDATION_FAILED: 422,
     RATE_LIMITED: 429,
     INTERNAL: 500,
+    ACCOUNT_SUSPENDED: 403,
+    ACCOUNT_BANNED: 403,
+    ACCOUNT_DELETED: 403,
+    CONFLICT: 409,
   });
 });
 
