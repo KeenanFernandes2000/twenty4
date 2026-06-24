@@ -3,3 +3,5 @@
 // schema, the error taxonomy, and the analytics union. M0 ships the DB schema set.
 export * as db from "./db/index.ts";
 export * from "./db/schema/index.ts";
+export * from "./errors/index.ts";
+export * from "./env/index.ts";

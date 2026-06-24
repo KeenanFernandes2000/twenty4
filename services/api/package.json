@@ -9,10 +9,16 @@
     "start": "bun src/index.ts"
   },
   "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@twenty4/contracts": "workspace:*",
-    "fastify": "^5.6.1"
+    "drizzle-orm": "^0.44.7",
+    "fastify": "^5.6.1",
+    "postgres": "^3.4.7",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@twenty4/config": "workspace:*"
+    "@twenty4/config": "workspace:*",
+    "undici": "^7.16.0"
   }
 }
