@@ -451,7 +451,14 @@ describe("ETag-pin TOCTOU", () => {
 
 // ── 7. Idempotent complete ───────────────────────────────────────────────────
 describe("idempotent complete", () => {
-  test("calling /complete twice ⇒ one enqueue, stable terminal state", async () => {
+  // Idempotency here is a PRODUCTION-CODE guarantee (an atomic uploaded→validating
+  // conditional UPDATE in /complete), NOT a side effect of BullMQ's jobId-dedup.
+  // We assert it by counting how many times /complete actually ENQUEUES (via a spy
+  // on queue.add), plus that the won-once terminal state and pinned ETag are stable.
+  // The previous version read a live `queue.getJob` counter — which the worker (or
+  // dedup) can drain/collapse — so "exactly one" flickered; counting real add()
+  // calls is deterministic and is the invariant that actually matters.
+  test("calling /complete twice (sequential) ⇒ exactly ONE enqueue, stable state", async () => {
     const now = new Date();
     const bytes = makeJpegWithExif(exifDateStringFor(now, HOST_TZ));
     const r = await init({
@@ -464,23 +471,86 @@ describe("idempotent complete", () => {
     const { id, uploadUrl } = r.json();
     expect(await putBytes(uploadUrl, bytes, "image/jpeg")).toBe(200);
 
-    const first = await complete(owner.token, id);
-    expect(first.statusCode).toBe(200);
-    expect(first.json().processingStatus).toBe("validating");
-
-    // The job is enqueued with jobId media-<id>. A 2nd complete must NOT add a 2nd.
+    // Spy on enqueue: count real add() calls for THIS id (jobId-dedup hides double
+    // enqueues at the queue level, so we must count at the call site).
     const jobId = validateMediaJobId(id);
-    const job1 = await queue.getJob(jobId);
-    expect(job1).toBeTruthy();
+    let addsForId = 0;
+    const origAdd = queue.add.bind(queue);
+    (queue as unknown as { add: typeof origAdd }).add = (async (name, data, opts) => {
+      if ((data as ValidateMediaJobData).mediaId === id) addsForId += 1;
+      return origAdd(name, data, opts);
+    }) as typeof origAdd;
 
-    const second = await complete(owner.token, id);
-    expect(second.statusCode).toBe(200);
-    // Still validating (no-op) — not re-reset to uploaded.
-    expect(second.json().processingStatus).toBe("validating");
+    try {
+      const first = await complete(owner.token, id);
+      expect(first.statusCode).toBe(200);
+      expect(first.json().processingStatus).toBe("validating");
 
-    // Only one job with this jobId exists (BullMQ dedupes by jobId).
-    const job2 = await queue.getJob(jobId);
-    expect(job2?.id).toBe(jobId);
+      const firstRow = await rowFor(id);
+      const pinnedEtag = (firstRow?.metadataSummary as Record<string, unknown>).pinnedEtag;
+      expect(typeof pinnedEtag).toBe("string");
+
+      const second = await complete(owner.token, id);
+      expect(second.statusCode).toBe(200);
+      // No-op: still validating, never re-reset to uploaded.
+      expect(second.json().processingStatus).toBe("validating");
+
+      // The 2nd complete did NOT re-enqueue or re-pin: exactly one enqueue total,
+      // and the pinned ETag / id are unchanged.
+      expect(addsForId).toBe(1);
+      const secondRow = await rowFor(id);
+      expect(secondRow?.id).toBe(id);
+      expect((secondRow?.metadataSummary as Record<string, unknown>).pinnedEtag).toBe(pinnedEtag);
+      expect(secondRow?.processingStatus).toBe("validating");
+
+      // The job exists exactly once under its deterministic jobId.
+      const job = await queue.getJob(jobId);
+      expect(job?.id).toBe(jobId);
+    } finally {
+      (queue as unknown as { add: typeof origAdd }).add = origAdd;
+    }
+  });
+
+  // The real TOCTOU: two /completes firing CONCURRENTLY both read `uploaded`. Only
+  // the request that atomically wins the uploaded→validating transition may enqueue
+  // + charge; the loser is a no-op success. Without the conditional-UPDATE guard,
+  // BOTH enqueue (proven: 49/50 double-enqueued) and dedup merely hides it.
+  test("calling /complete twice (CONCURRENT) ⇒ still exactly ONE enqueue", async () => {
+    const now = new Date();
+    const bytes = makeJpegWithExif(exifDateStringFor(now, HOST_TZ));
+    const r = await init({
+      token: owner.token,
+      mediaType: "photo",
+      contentType: "image/jpeg",
+      byteSize: bytes.length,
+      deviceTimezone: HOST_TZ,
+    });
+    const { id, uploadUrl } = r.json();
+    expect(await putBytes(uploadUrl, bytes, "image/jpeg")).toBe(200);
+
+    let addsForId = 0;
+    const origAdd = queue.add.bind(queue);
+    (queue as unknown as { add: typeof origAdd }).add = (async (name, data, opts) => {
+      if ((data as ValidateMediaJobData).mediaId === id) addsForId += 1;
+      return origAdd(name, data, opts);
+    }) as typeof origAdd;
+
+    try {
+      const [a, b] = await Promise.all([complete(owner.token, id), complete(owner.token, id)]);
+      expect(a.statusCode).toBe(200);
+      expect(b.statusCode).toBe(200);
+      expect(a.json().processingStatus).toBe("validating");
+      expect(b.json().processingStatus).toBe("validating");
+
+      // Exactly one of the two concurrent completes actually enqueued.
+      expect(addsForId).toBe(1);
+
+      const row = await rowFor(id);
+      expect(row?.processingStatus).toBe("validating");
+      expect(typeof (row?.metadataSummary as Record<string, unknown>).pinnedEtag).toBe("string");
+    } finally {
+      (queue as unknown as { add: typeof origAdd }).add = origAdd;
+    }
   });
 });
 

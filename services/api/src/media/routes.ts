@@ -275,15 +275,44 @@ export async function registerMediaRoutes(app: FastifyInstance, deps: MediaRoute
         actualContentType: actualType,
         actualContentLength: head.contentLength,
       };
-      await db.db
+
+      // ── Atomic uploaded→validating claim (locked-transition, mirrors M3 join) ──
+      // The early `processingStatus !== "uploaded"` short-circuit above is a fast
+      // path, NOT the guarantee — two concurrent /completes both read `uploaded`,
+      // both pass that check, and both fall through to here (a TOCTOU). The single
+      // conditional UPDATE below is the real guard: only the request whose UPDATE
+      // actually flips `uploaded`→`validating` gets a row back and proceeds to
+      // enqueue + charge ONCE. A racing second complete's UPDATE matches no row
+      // (status is no longer `uploaded`) → it does NOT re-enqueue; it returns the
+      // current row as a no-op success. Without this, BullMQ's jobId-dedup was the
+      // ONLY thing collapsing the double-enqueue — a side effect, not a guarantee.
+      const claimed = await db.db
         .update(dailyMediaItem)
         .set({ processingStatus: "validating", metadataSummary: nextSummary })
-        .where(eq(dailyMediaItem.id, id));
+        .where(and(eq(dailyMediaItem.id, id), eq(dailyMediaItem.processingStatus, "uploaded")))
+        .returning();
 
-      // Enqueue (idempotent jobId). If the enqueue throws (Redis blip), the row is
-      // already `validating` and a later /complete is a no-op — so re-enqueue won't
-      // happen automatically; that's acceptable (the row can be re-driven manually).
-      await enqueueValidateMedia(queue, id);
+      if (claimed.length === 0) {
+        // Lost the race: another concurrent /complete already advanced this row.
+        // No-op success — do NOT enqueue or charge again. Return current state.
+        const current = await loadOwnedRow(db, id, u.id);
+        reply.status(200).send(await toItemDto(s3, current));
+        return;
+      }
+
+      // We won the transition. Enqueue exactly once. If the enqueue throws (Redis
+      // blip), the row is already `validating` — release the claim back to
+      // `uploaded` (v1 §5: idempotency claim released on throw) so a later /complete
+      // can re-drive it, then re-raise.
+      try {
+        await enqueueValidateMedia(queue, id);
+      } catch (err) {
+        await db.db
+          .update(dailyMediaItem)
+          .set({ processingStatus: "uploaded", metadataSummary: summary })
+          .where(eq(dailyMediaItem.id, id));
+        throw err;
+      }
 
       const fresh = await loadOwnedRow(db, id, u.id);
       reply.status(200).send(await toItemDto(s3, fresh));
