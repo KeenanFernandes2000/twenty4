@@ -5,13 +5,13 @@ import { buildApp } from "../src/app.ts";
 import { createDb, type DbClient } from "../src/db.ts";
 import { createRedis, type RedisClient } from "../src/redis.ts";
 import { parseEnv, type Env } from "@twenty4/contracts";
-import { createValidateMediaQueue, type ValidateMediaJobData } from "../src/media/queue.ts";
+import { type ValidateMediaJobData } from "../src/media/queue.ts";
 import { createWorkerDb } from "@twenty4/worker";
 import { createWorkerS3 } from "@twenty4/worker";
 import { processValidateMedia } from "@twenty4/worker";
 import { loadEnvForTest } from "./env.ts";
 import { phoneLogin } from "./authHelpers.ts";
-import type { Queue } from "bullmq";
+import { Queue, type ConnectionOptions } from "bullmq";
 
 export function makeMediaEnv(): Env {
   loadEnvForTest();
@@ -36,8 +36,31 @@ export function makeMediaRedis(): RedisClient {
   return createRedis(process.env.REDIS_URL!);
 }
 
+// ── ISOLATED test queue ──────────────────────────────────────────────────────
+// The production validate-media worker listens on the FIXED queue name
+// `validate-media`. If the test queue used that same name, a running prod worker
+// would consume test-created jobs and advance/mutate the row's processing_status
+// mid-test (validating→valid/invalid), corrupting state assertions and enqueue
+// counts. So tests inject a queue with a UNIQUE name the prod worker is NOT
+// consuming. The API only ever ADDs to whatever queue it's handed; validation
+// happy-paths run the processor IN-PROCESS (runValidateMediaJob) against the DB
+// row directly — they never depend on the BullMQ worker — so an isolated,
+// never-drained test queue is exactly what we want.
+//
+// Uniqueness is derived from process.pid + a monotonic counter (NO Date.now /
+// Math.random — those may be restricted/non-deterministic in the runtime, and pid
+// + counter is sufficient: the prod worker only ever consumes the literal
+// `validate-media` name).
+let testQueueSeq = 0;
+
+function redisConnection(redisUrl: string): ConnectionOptions {
+  const u = new URL(redisUrl);
+  return { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null };
+}
+
 export function makeMediaQueue(env: Env): Queue<ValidateMediaJobData> {
-  return createValidateMediaQueue(env.REDIS_URL);
+  const name = `validate-media-test-${process.pid}-${testQueueSeq++}`;
+  return new Queue<ValidateMediaJobData>(name, { connection: redisConnection(env.REDIS_URL) });
 }
 
 export async function buildMediaApp(args: {
