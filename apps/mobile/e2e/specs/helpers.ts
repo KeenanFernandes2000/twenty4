@@ -5,6 +5,8 @@
 // put the testID on a WRAPPER <div> (a View), so the real <input> is a descendant —
 // hence `[data-testid="..."] input` for text fields.
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { expect, type Page, type Browser, type BrowserContext } from '@playwright/test';
 
 // The live API. Read from the same env Expo uses; fall back to the known host.
@@ -205,4 +207,76 @@ export async function expectSessionToken(page: Page): Promise<void> {
       { timeout: 30_000 },
     )
     .not.toBeNull();
+}
+
+// ── DB account-status mutation (suspended-verify e2e) ────────────────────────
+// Flip a freshly-signed-up account's account_status straight in Postgres so the
+// next sign-in hits the post-verify 403 gate. The phone is normalized server-side
+// to `+<digits>` (see normalizeIdentifier); freshPhone() already emits that exact
+// canonical form, so an `=` match works. We also pass a LIKE-on-last-7 fallback in
+// the same statement (OR) to be resilient if normalization ever diverges.
+//
+// Tries (a) `docker exec <container>` (cwd-independent) then (b) `docker compose
+// exec` from the discovered repo root. Returns true iff ≥1 row was updated; false
+// if neither transport works (caller test.skips with a note). Captures the last
+// error so the skip reason is actionable rather than a black box.
+
+// Walk up from this file to the dir that holds docker-compose.yml (the repo root),
+// so `docker compose` resolves its project regardless of Playwright's cwd / how the
+// spec was bundled. Falls back to four-levels-up if the file isn't found.
+function findRepoRoot(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'docker-compose.yml'))) return dir;
+    const parent = join(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return join(__dirname, '..', '..', '..', '..');
+}
+const REPO_ROOT = findRepoRoot();
+
+export function setAccountStatusByPhone(
+  phone: string,
+  status: 'active' | 'suspended' | 'banned' | 'deleted',
+): boolean {
+  const last7 = phone.replace(/\D/g, '').slice(-7);
+  // NOTE: the table identifier "user" is double-quoted in SQL (reserved word). The
+  // whole statement is passed inside a double-quoted `-c "..."` to /bin/sh, so the
+  // inner identifier quotes MUST be escaped (\\" → \" in the command → "user" to
+  // psql). Without this the shell strips them and psql sees `UPDATE user` → syntax
+  // error. String literals use single quotes (literal inside the double-quoted -c).
+  const sql = `UPDATE \\"user\\" SET account_status='${status}' WHERE phone='${phone}' OR phone LIKE '%${last7}%';`;
+  const candidates = [
+    // Container-name exec is cwd-independent — try it first.
+    {
+      cmd: `docker exec twenty4-postgres-1 psql -U twenty4 -d twenty4 -c "${sql}"`,
+      opts: {},
+    },
+    // Compose exec, anchored at the repo root (where docker-compose.yml lives).
+    {
+      cmd: `docker compose exec -T postgres psql -U twenty4 -d twenty4 -c "${sql}"`,
+      opts: { cwd: REPO_ROOT },
+    },
+  ];
+  let lastErr = '';
+  for (const { cmd, opts } of candidates) {
+    try {
+      const out = execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts });
+      // psql prints "UPDATE <n>" for a successful UPDATE.
+      const m = out.match(/UPDATE\s+(\d+)/);
+      if (m && Number(m[1]) >= 1) return true;
+      // Reached psql but matched 0 rows — surface clearly (don't silently retry).
+      // eslint-disable-next-line no-console
+      console.warn(`[e2e] account-status UPDATE matched 0 rows for ${phone}: ${out.trim()}`);
+      return false;
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[e2e] could not reach postgres (repoRoot=${REPO_ROOT}) via docker exec OR docker compose: ${lastErr}`,
+  );
+  return false;
 }

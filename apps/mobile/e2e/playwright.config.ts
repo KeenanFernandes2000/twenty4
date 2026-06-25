@@ -21,6 +21,12 @@ const reuseExisting = process.env.E2E_NO_WEBSERVER === '1';
 
 export default defineConfig({
   testDir: './specs',
+  // Specs use the `.e2e.ts` suffix (NOT Playwright's default `.spec`/`.test`) so
+  // bun's repo-root `*.spec.ts`/`*.test.ts` collection never picks them up — bun's
+  // runner is incompatible with Playwright's `test.describe.configure()`. Because
+  // of this custom suffix the runner must be pointed at THIS config explicitly
+  // (see the `test:e2e:mobile` script's `--config=e2e/playwright.config.ts`).
+  testMatch: /\.e2e\.ts$/,
   // One worker: the live API has a per-IP OTP cap (20/15min) and flows share
   // browser contexts; serial keeps OTP usage predictable and avoids cap churn.
   workers: 1,

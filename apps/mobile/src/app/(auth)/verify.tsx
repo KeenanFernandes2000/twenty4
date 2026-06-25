@@ -10,6 +10,12 @@
 // Error handling (branch on ApiError.code):
 //   UNAUTHORIZED (401) → toast "Invalid or expired code" + clear the cells
 //   RATE_LIMITED (429) → toast "Too many attempts, request a new code"
+//   ACCOUNT_SUSPENDED | ACCOUNT_BANNED | ACCOUNT_DELETED (403) → full-screen
+//     AccountRestrictedNotice (verify mints a session, then the per-request
+//     account-status gate tears it down → 403). We deliberately do NOT reject at
+//     /auth/start (avoids account-enumeration), so this is the first point we can
+//     surface it. No token/session exists here, so render the notice directly —
+//     don't route through the authStore `suspended` gate (that needs a session).
 //   else / network     → generic toast.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
@@ -20,6 +26,23 @@ import { Screen, Text, Button, OTPInput, useToast } from '@/ui';
 import { useTheme } from '@/theme';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import {
+  AccountRestrictedNotice,
+  type RestrictedCode,
+} from '@/components/AccountRestrictedNotice';
+
+// The verify-time restricted codes (403 from the account-status gate).
+const RESTRICTED_CODES: readonly RestrictedCode[] = [
+  'ACCOUNT_SUSPENDED',
+  'ACCOUNT_BANNED',
+  'ACCOUNT_DELETED',
+];
+function restrictedCodeFromError(err: unknown): RestrictedCode | null {
+  if (err instanceof ApiError && RESTRICTED_CODES.includes(err.code as RestrictedCode)) {
+    return err.code as RestrictedCode;
+  }
+  return null;
+}
 
 const OTP_LENGTH = 6;
 const RESEND_SECONDS = 30;
@@ -44,6 +67,9 @@ export default function VerifyScreen() {
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(RESEND_SECONDS);
+  // When non-null, a restricted account was detected at verify time (403) → render
+  // the full-screen AccountRestrictedNotice instead of the OTP form.
+  const [restricted, setRestricted] = useState<RestrictedCode | null>(null);
   // Guard so an in-flight / completed verify isn't fired twice (onComplete + button).
   const verifyingRef = useRef(false);
 
@@ -68,7 +94,13 @@ export default function VerifyScreen() {
       } catch (err) {
         // Reset so the user can retry with a fresh code.
         setCode('');
-        if (err instanceof ApiError) {
+        // Restricted account (403): verify minted a session, then the per-request
+        // account-status gate tore it down. Swap to the full-screen notice — there's
+        // no live session to route through the authStore `suspended` gate.
+        const rcode = restrictedCodeFromError(err);
+        if (rcode) {
+          setRestricted(rcode);
+        } else if (err instanceof ApiError) {
           if (err.code === 'UNAUTHORIZED') {
             toast.show({ type: 'error', message: 'Invalid or expired code' });
           } else if (err.code === 'RATE_LIMITED') {
@@ -129,6 +161,21 @@ export default function VerifyScreen() {
       setResending(false);
     }
   };
+
+  // Restricted account detected at verify time → full-screen notice (state swap).
+  // "Back to sign in" clears local verify state and returns to welcome.
+  if (restricted) {
+    return (
+      <AccountRestrictedNotice
+        code={restricted}
+        onBack={() => {
+          setRestricted(null);
+          setCode('');
+          router.replace('/(auth)/welcome');
+        }}
+      />
+    );
+  }
 
   return (
     <Screen keyboardAvoiding>

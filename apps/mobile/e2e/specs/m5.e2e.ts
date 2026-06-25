@@ -17,9 +17,12 @@ import {
   signUpFreshUser,
   expectSessionToken,
   newAppContext,
+  setAccountStatusByPhone,
+  fetchDevOtp,
   shot,
   tid,
   inputIn,
+  SESSION_TOKEN_KEY,
 } from './helpers';
 
 // Serial: flow 3/4 reuse the owner context+group created in earlier steps.
@@ -264,5 +267,156 @@ test('flow 5b — logged-out cold deep-link shows sign-in CTA (no crash)', async
     expect(token).toBeNull();
   } finally {
     await ctx.close().catch(() => {});
+  }
+});
+
+// ── Flow 6: Account switch in ONE context drops stale cross-account cache ──────
+// Regression guard for the react-query cache bug: logout of A → login as B must
+// show B's data IMMEDIATELY (no manual pull-to-refresh), never A's cached groups.
+// authStore.clear() now calls queryClient.clear() on logout (and setSession() does
+// too as a belt-and-suspenders). We sign up A, give A a group, sign out, sign up a
+// fresh B in the SAME browser context, and assert B's Groups home is empty with
+// A's group card absent — with no refresh in between.
+test('flow 6 — account switch clears stale cross-account query cache', async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const ctx = await newAppContext(browser);
+  const page = await ctx.newPage();
+  try {
+    // ── User A: sign up and create a group so A has a NON-empty groups list. ──
+    const userA = await signUpFreshUser(page, {
+      channel: 'phone',
+      screenshotPrefix: 'flow6a',
+    });
+    const aGroupName = `A Crew ${Date.now().toString(36)}`;
+
+    await tid(page, 'new-group-button').click();
+    await expect(tid(page, 'group-name-input')).toBeVisible();
+    await inputIn(page, 'group-name-input').fill(aGroupName);
+    await tid(page, 'create-group-button').click();
+    await expect(tid(page, 'group-detail-name')).toHaveText(aGroupName, {
+      timeout: 30_000,
+    });
+
+    // Back to the list → A's group card is present (cache now holds A's groups).
+    await tid(page, 'header-back-button').first().click();
+    await expect(tid(page, 'groups-list')).toBeVisible({ timeout: 30_000 });
+    const aCard = page.locator('[data-testid^="group-card-"]', { hasText: aGroupName });
+    await expect(aCard).toBeVisible();
+    await shot(page, 'flow6-01-userA-with-group');
+
+    // ── Sign out (clear() → queryClient.clear() → AuthGate → welcome). ──
+    await tid(page, 'sign-out-button').click();
+    await expect(tid(page, 'auth-get-started-button')).toBeVisible({
+      timeout: 60_000,
+    });
+    // Session token gone after logout.
+    await expect
+      .poll(
+        async () => page.evaluate((k) => window.localStorage.getItem(k), SESSION_TOKEN_KEY),
+        { timeout: 30_000 },
+      )
+      .toBeNull();
+
+    // ── Fresh User B in the SAME context (the whole point: same-session switch). ──
+    const userB = await signUpFreshUser(page, {
+      channel: 'phone',
+      screenshotPrefix: 'flow6b',
+    });
+    expect(userB.identifier).not.toEqual(userA.identifier);
+
+    // B's Groups home must show the EMPTY state IMMEDIATELY (no manual refresh),
+    // and A's group must NOT be visible (stale cache would have leaked it).
+    await expect(tid(page, 'empty-state')).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.locator('[data-testid^="group-card-"]', { hasText: aGroupName }),
+    ).toHaveCount(0);
+    await expect(page.getByText(aGroupName)).toHaveCount(0);
+    await shot(page, 'flow6-02-userB-empty-no-A-groups');
+  } finally {
+    await ctx.close().catch(() => {});
+  }
+});
+
+// ── Flow 7: Suspended account hits the post-verify 403 notice (no generic toast) ─
+// Proves Fix 2: a suspended account that enters the OTP flow and submits a valid
+// code gets the dedicated AccountRestrictedNotice (full-screen), NOT a cryptic
+// error toast, and NO session token is stored. We deliberately do NOT reject at
+// /auth/start (anti-enumeration), so the notice is surfaced at verify time.
+test('flow 7 — suspended account shows restricted notice at verify (no session)', async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+
+  // 1) Sign up a fresh user and capture their phone identifier.
+  const setupCtx = await newAppContext(browser);
+  const setupPage = await setupCtx.newPage();
+  let phone = '';
+  try {
+    const user = await signUpFreshUser(setupPage, { channel: 'phone' });
+    phone = user.identifier;
+  } finally {
+    await setupCtx.close().catch(() => {});
+  }
+  expect(phone.length).toBeGreaterThan(0);
+
+  // 2) Suspend them directly in Postgres (docker compose exec → fallback docker exec).
+  const suspended = setAccountStatusByPhone(phone, 'suspended');
+  test.skip(
+    !suspended,
+    `could not suspend ${phone} in the DB (docker unreachable from test env) — see console`,
+  );
+
+  // 3) Fresh context: drive welcome → phone sign-in → verify → expect the notice.
+  const ctx = await newAppContext(browser);
+  const page = await ctx.newPage();
+  try {
+    await page.goto('/');
+    await expect(tid(page, 'auth-get-started-button')).toBeVisible({ timeout: 150_000 });
+    await tid(page, 'auth-get-started-button').click();
+
+    await expect(tid(page, 'auth-send-button')).toBeVisible();
+    // Phone is the default channel.
+    await inputIn(page, 'auth-identifier-input').fill(phone);
+    await tid(page, 'auth-send-button').click();
+
+    // Verify: fetch the dev OTP and submit it.
+    await expect(tid(page, 'auth-otp-input')).toBeVisible({ timeout: 60_000 });
+    const code = await fetchDevOtp(ctx, phone, 'phone');
+    const otp = inputIn(page, 'auth-otp-input').first();
+    await otp.click();
+    await otp.fill('');
+    await otp.fill(code);
+    const verifyBtn = tid(page, 'auth-verify-button');
+    if (await verifyBtn.isEnabled().catch(() => false)) {
+      await verifyBtn.click().catch(() => {});
+    }
+
+    // The dedicated restricted notice renders (NOT a generic toast).
+    await expect(tid(page, 'restricted-notice')).toBeVisible({ timeout: 30_000 });
+    await shot(page, 'polish-suspended-notice');
+
+    // No session token was stored (verify minted, gate tore it down → 403 thrown
+    // before setSession()).
+    const token = await page.evaluate(
+      (k) => window.localStorage.getItem(k),
+      SESSION_TOKEN_KEY,
+    );
+    expect(token).toBeNull();
+
+    // "Back to sign in" returns to welcome: the restricted notice unmounts and a
+    // VISIBLE welcome "Get started" CTA is present. (expo-router on web can keep a
+    // prior welcome instance in the DOM as `hidden`, so we filter to :visible rather
+    // than .first(), which would match the backgrounded one.)
+    await tid(page, 'restricted-back-button').click();
+    await expect(tid(page, 'restricted-notice')).toBeHidden({ timeout: 30_000 });
+    await expect(
+      page.locator('[data-testid="auth-get-started-button"]:visible'),
+    ).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await ctx.close().catch(() => {});
+    // Throwaway account; convenience reset so a re-run with the same phone re-uses it.
+    if (phone) setAccountStatusByPhone(phone, 'active');
   }
 });

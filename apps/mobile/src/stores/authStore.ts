@@ -36,6 +36,7 @@ import { create } from 'zustand';
 import { ApiError } from '@twenty4/api-client';
 import type { UserDTO } from '@twenty4/contracts';
 import { getToken, setToken, deleteToken } from '@/lib/secureStore';
+import { queryClient } from '@/lib/queryClient';
 
 export type AuthStatus =
   | 'loading'
@@ -147,6 +148,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setSession: async (token: string) => {
+    // Belt-and-suspenders for account switches that DON'T go through an explicit
+    // logout (e.g. a token replaced directly): drop all cached queries so the
+    // incoming user never sees the previous user's data. Query keys are static
+    // (not userId-scoped) today; clearing the cache is the surgical fix.
+    // (Future hardening: scope query keys by userId to avoid the blanket clear.)
+    queryClient.clear();
     await setToken(token);
     set({ token });
     await get().refreshMe();
@@ -190,6 +197,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     }
     await deleteToken();
+    // Drop ALL cached react-query data so the next user mounts fresh. Without this,
+    // logging out of A and into B briefly serves A's cached groups/me (the query
+    // keys are static, not userId-scoped), until a manual refetch.
+    queryClient.clear();
     set({ token: null, user: null, status: 'unauthenticated' });
   },
 }));
