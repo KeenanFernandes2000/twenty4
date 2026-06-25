@@ -16,6 +16,9 @@
     "start:worker": "bun services/worker/src/index.ts",
     "db:generate": "cd packages/contracts && drizzle-kit generate",
     "db:migrate": "cd packages/contracts && drizzle-kit migrate",
+    "dev:mobile": "cd apps/mobile && npx expo start",
+    "web:mobile": "cd apps/mobile && npx expo start --web",
+    "test:e2e:mobile": "cd apps/mobile/e2e && npx playwright test",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "bun test"

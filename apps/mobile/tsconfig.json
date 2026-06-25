@@ -1,0 +1,27 @@
+{
+  "extends": ["../../tsconfig.base.json", "expo/tsconfig.base"],
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    // ONE LOCAL DEVIATION from tsconfig.base.json (Expo tooling requirement):
+    // - verbatimModuleSyntax OFF: expo-router's generated typed-routes + RN libs
+    //   ship value/type-mixed default exports that trip verbatim mode.
+    // allowImportingTsExtensions stays ON (inherited): the @twenty4/contracts /
+    // api-client workspace SOURCE uses .ts import suffixes (export * from
+    // "./errors/index.ts"), so typechecking that source requires it. It's safe
+    // here because expo/tsconfig.base already sets noEmit:true (Metro/Babel build,
+    // not tsc).
+    "verbatimModuleSyntax": false,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@/assets/*": ["./assets/*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

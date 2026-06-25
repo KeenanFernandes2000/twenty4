@@ -1,0 +1,17 @@
+// secureStore (native) — expo-secure-store backed session-token persistence.
+// Used on iOS/Android (Metro picks this over secureStore.web.ts by platform ext).
+import * as SecureStore from 'expo-secure-store';
+
+export const SESSION_TOKEN_KEY = 'twenty4.session_token';
+
+export async function getToken(): Promise<string | null> {
+  return SecureStore.getItemAsync(SESSION_TOKEN_KEY);
+}
+
+export async function setToken(token: string): Promise<void> {
+  await SecureStore.setItemAsync(SESSION_TOKEN_KEY, token);
+}
+
+export async function deleteToken(): Promise<void> {
+  await SecureStore.deleteItemAsync(SESSION_TOKEN_KEY);
+}

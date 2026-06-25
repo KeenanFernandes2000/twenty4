@@ -94,3 +94,16 @@ ehthumbs.db
 Thumbs.db
 desktop.ini
 graphify-out/
+
+# ───────────────────────── E2E (Playwright) artifacts ───────────
+# Keep the specs/config/README; ignore generated artifacts.
+apps/mobile/e2e/screenshots/
+# Playwright drops these relative to its cwd (apps/mobile) AND the config dir
+# (apps/mobile/e2e); ignore both locations.
+apps/mobile/test-results/
+apps/mobile/e2e/test-results/
+apps/mobile/playwright-report/
+apps/mobile/e2e/playwright-report/
+**/test-results/
+**/playwright-report/
+**/playwright/.cache/

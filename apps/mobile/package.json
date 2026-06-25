@@ -2,6 +2,37 @@
   "name": "@twenty4/mobile",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
-  "main": "src/index.ts"
+  "main": "expo-router/entry",
+  "dependencies": {
+    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
+    "@expo-google-fonts/nunito": "^0.4.2",
+    "@expo/metro-runtime": "~56.0.15",
+    "@tanstack/react-query": "^5.95.0",
+    "@twenty4/api-client": "workspace:*",
+    "@twenty4/contracts": "workspace:*",
+    "expo": "~56.0.12",
+    "expo-clipboard": "~56.0.4",
+    "expo-constants": "~56.0.18",
+    "expo-font": "~56.0.7",
+    "expo-linear-gradient": "~56.0.4",
+    "expo-linking": "~56.0.14",
+    "expo-router": "~56.2.11",
+    "expo-secure-store": "~56.0.4",
+    "expo-splash-screen": "~56.0.10",
+    "expo-status-bar": "~56.0.4",
+    "expo-system-ui": "~56.0.5",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2",
+    "react-native-web": "^0.21.2",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/react": "~19.2.2",
+    "babel-preset-expo": "~56.0.0",
+    "typescript": "~6.0.3"
+  }
 }

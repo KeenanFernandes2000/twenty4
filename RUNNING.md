@@ -138,3 +138,63 @@ Notes:
   clear 429 message; wait for the window or raise the cap in `.env`.
 - Presigned URLs are signed with `S3_PUBLIC_ENDPOINT`; the script asserts the
   host is **not** localhost, so that must be set to the reachable host.
+
+---
+
+## Running the mobile app (M5)
+
+The Expo Go app (`apps/mobile`, Android-first). Boots, signs in via phone+email
+OTP, creates/joins groups — all wired to the LAN/Tailscale backend.
+
+**Prerequisites** — the stack must be up (the app is a client, it starts nothing):
+
+```bash
+docker compose up -d                    # postgres + redis + minio + mailpit
+bun services/api/src/index.ts           # API on :3000 (binds 0.0.0.0)
+bun services/worker/src/index.ts        # worker
+```
+
+The **device-networking checklist above applies** — API on `0.0.0.0`, WSL2
+`networkingMode=mirrored`, reachable via the LAN/Tailscale IP, never `127.0.0.1`.
+Prove `http://<LAN-or-Tailscale-IP>:3000/health` from the phone's browser first.
+
+**Set the API URL** — Expo loads `.env` from the **app dir**, NOT the repo root:
+
+```bash
+cp apps/mobile/.env.example apps/mobile/.env
+# set EXPO_PUBLIC_API_URL to the SAME LAN/Tailscale IP as root .env, e.g.:
+#   EXPO_PUBLIC_API_URL=http://100.98.100.117:3000
+```
+
+(`apps/mobile/.env` is gitignored; `.env.example` is committed.)
+
+**Launch** — from the repo root:
+
+```bash
+bun run dev:mobile                      # Expo dev server (expo start)
+```
+
+Open in **Expo Go** on the phone (scan the QR). Android-first. Sign in with the
+**dev OTP** — the verify screen auto-fills the code in dev; for email OTP, read it
+from Mailpit at `http://localhost:8025`.
+
+### Verify the mobile build (M5 web e2e)
+
+A Playwright suite drives the **web build** through the full client flow against
+the live API — the headless proxy for the on-device acceptance check:
+
+```bash
+bun run test:e2e:mobile                 # needs the stack up + Playwright chromium
+```
+
+It runs sign-in (phone + email) → profile setup → groups → invite/join across
+two browser contexts (membership asserted on both rosters) plus cold deep-link
+join, then captures Ember-theme screenshots under `apps/mobile/e2e/screenshots/`
+(gitignored). Caveats (per `apps/mobile/e2e/README.md`):
+
+- Repeated runs can trip the per-IP OTP cap (`OTP_MAX_PER_IP`, 20 / 15 min) —
+  flush `otp:*` keys on redis (port **6380**) between runs.
+- Email OTP is fetched from **Mailpit** (`GET /auth/dev/last-otp` is phone-only).
+
+> **The M5 acceptance gate is on-device interactive testing** (Expo Go on a real
+> Android phone) — the web e2e is the proxy, not the gate.

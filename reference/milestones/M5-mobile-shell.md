@@ -1,5 +1,7 @@
 # M5 — Mobile shell
 
+> ✅ Implemented & e2e-verified (commit `<pending>`) — **on-device (Expo Go) acceptance still pending** (the user's real-phone check). Built on Expo SDK 56.0.12 / RN 0.85.3 / expo-router 56.2.11 (versions pinned via `expo install --fix`).
+
 > Spec phase: P1 · Depends on: M0 (Bun monorepo + Android↔backend networking), M1 (API skeleton + error envelope/CORS), M2 (auth: phone+email OTP, sessions, guards), M3 (groups + invite/join + membership authz) · Branch commit: one commit on `rebuild/v2` (merged only after the Android acceptance check passes)
 
 ## 1. Goal
@@ -31,31 +33,44 @@ On a real Android phone, the Expo Go app boots, a user signs in end-to-end with 
 
 ## 3. Tasks (ordered checklist)
 
-- [ ] Scaffold `apps/mobile` Expo app (Expo Go target, Android-first); confirm it opens in Expo Go on a real device over LAN.
-- [ ] Run `npx expo install --fix` immediately and pin the resolved versions — **do not hand-write RN/Expo versions** (PLAN.md's RN 0.81 guess was wrong; reality was 0.85.3).
-- [ ] Add `expo-router`; set up route groups `(auth)` and `(app)` with a root layout that renders `AuthGate`.
-- [ ] Wire `react-query` `QueryClientProvider` + a typed `queryKeys` factory module.
-- [ ] Build the typed API client: `fetch` wrapper that injects `Authorization: Bearer <token>`, parses `{ error: { code, status, message } }` into a typed `ApiError`, and types request/response against `packages/contracts` Zod DTOs. Base URL from `EXPO_PUBLIC_API_URL`.
-- [ ] Re-implement Ember tokens from `reference/Spool.html` (dark theme: bg/surface/border, accent/ember, text primary/secondary/muted, success/danger; font family + sizes/weights; spacing scale; radii) as a typed `theme` object + `ThemeProvider`.
-- [ ] Build the `ui` primitives on the theme: `Screen` (safe-area + bg), `Text`, `Button` (variants), `Input`, `OTPInput`, `Card`, `Avatar`, `Spinner`, `Toast`/toast host.
-- [ ] Implement `authStore` (zustand): `{ token, user, status, hydrate(), setSession(), clear() }`; persist token via a platform-split `secureStore.native.ts` (expo-secure-store) / `secureStore.web.ts` (localStorage).
-- [ ] On launch, hydrate token from secure store, then `GET` session/me to populate `user` + `account_status`.
-- [ ] **Welcome (1.1):** entry CTA → Sign-in.
-- [ ] **Sign-in (1.2):** toggle phone / email; `POST /auth/start` with the chosen identifier.
-- [ ] **Verify OTP (1.3):** `OTPInput`; `POST /auth/verify`; on success store session; new user → Profile setup, existing → app.
-- [ ] **Profile setup (1.4):** `POST /users` (display name, username, optional photo placeholder); handle username-taken error from the taxonomy.
-- [ ] **Legal reader (1.7):** render `GET /legal/privacy` + `GET /legal/terms` (stub content acceptable for P1).
-- [ ] **AuthGate:** redirect unauthenticated → `(auth)`, authenticated → `(app)`; `suspended` → `SuspendedScreen`; loading → skeleton.
-- [ ] **Groups list / home (4.x):** `GET /groups`; empty state; create CTA.
-- [ ] **Create group:** `POST /groups`; navigate to `[id]`.
-- [ ] **Group detail `[id]`:** `GET /groups/{id}`; show members entry, invite/share entry.
-- [ ] **Invite/share:** `POST /groups/{id}/invites` → show code + share sheet with deep-link URL.
-- [ ] **Join via code:** input code → `GET /invites/{code}` (preview) → `POST /invites/{code}/join`.
-- [ ] **Deep-link join:** configure `expo-router` linking so `/invites/{code}` opens the preview/join screen; handle cold-start + warm-start.
-- [ ] **Members:** `GET` members; owner-remove (`DELETE /groups/{id}/members/{userId}`); `POST /groups/{id}/leave`.
-- [ ] Wire global states: Offline banner, Error+retry on query failure, Toasts for mutations, Loading skeletons.
-- [ ] Document per-device run (LAN IP, `EXPO_PUBLIC_API_URL`, WSL2 mirrored networking) in `RUNNING.md`.
-- [ ] (Optional) Expo-web Playwright smoke screenshots of each screen for visual QA.
+- [x] Scaffold `apps/mobile` Expo app (Expo Go target, Android-first); confirm it opens in Expo Go on a real device over LAN. *(scaffolded + web/headless-booted; real-device confirm = the pending acceptance check.)*
+- [x] Run `npx expo install --fix` immediately and pin the resolved versions — **do not hand-write RN/Expo versions** (PLAN.md's RN 0.81 guess was wrong; reality was 0.85.3). *(pinned: SDK 56.0.12 / RN 0.85.3 / React 19.2.3 / expo-router 56.2.11.)*
+- [x] Add `expo-router`; set up route groups `(auth)` and `(app)` with a root layout that renders `AuthGate`. *(`main: "expo-router/entry"`; AuthGate is segments-based.)*
+- [x] Wire `react-query` `QueryClientProvider` + a typed `queryKeys` factory module.
+- [x] Build the typed API client: `fetch` wrapper that injects `Authorization: Bearer <token>`, parses `{ error: { code, status, message } }` into a typed `ApiError`, and types request/response against `packages/contracts` Zod DTOs. Base URL from `EXPO_PUBLIC_API_URL`. *(`packages/api-client` upgraded stub → full client; response Zod-validation drift guard.)*
+- [x] Re-implement Ember tokens from `reference/Spool.html` (dark theme: bg/surface/border, accent/ember, text primary/secondary/muted, success/danger; font family + sizes/weights; spacing scale; radii) as a typed `theme` object + `ThemeProvider`. *(`src/theme/`; bg `#161210`/surface `#221c18`/accent `#ff7a52` + ember gradient `#ffb86c→#ff5236`; Nunito scale; per-platform `shadow()`.)*
+- [x] Build the `ui` primitives on the theme: `Screen` (safe-area + bg), `Text`, `Button` (variants), `Input`, `OTPInput`, `Card`, `Avatar`, `Spinner`, `Toast`/toast host. *(`src/ui/`; Button = ember-gradient pill + glow; ToastProvider/useToast.)*
+- [x] Implement `authStore` (zustand): `{ token, user, status, hydrate(), setSession(), clear() }`; persist token via a platform-split `secureStore.native.ts` (expo-secure-store) / `secureStore.web.ts` (localStorage). *(5-state machine: loading/unauthenticated/needs-profile/suspended/authenticated; key `twenty4.session_token`.)*
+- [x] On launch, hydrate token from secure store, then `GET` session/me to populate `user` + `account_status`. *(`GET /users/me` → UserDTO incl. accountStatus; a non-active account returns 403, mapped to the suspended gate.)*
+- [x] **Welcome (1.1):** entry CTA → Sign-in.
+- [x] **Sign-in (1.2):** toggle phone / email; `POST /auth/start` with the chosen identifier.
+- [x] **Verify OTP (1.3):** `OTPInput`; `POST /auth/verify`; on success store session; new user → Profile setup, existing → app. *(6-cell; dev-OTP autofill in `__DEV__`.)*
+- [x] **Profile setup (1.4):** `POST /users` (display name, username, optional photo placeholder); handle username-taken error from the taxonomy. *(409 surfaced inline.)*
+- [x] **Legal reader (1.7):** render `GET /legal/privacy` + `GET /legal/terms` (stub content acceptable for P1). *(⚠️ there are NO `/legal/*` API routes — copy is bundled in-app as a P1 placeholder; real routes deferred.)*
+- [x] **AuthGate:** redirect unauthenticated → `(auth)`, authenticated → `(app)`; `suspended` → `SuspendedScreen`; loading → skeleton. *(also clears on deleted, pins new users to profile-setup, passes through `invites/[code]` + `dev-gallery`.)*
+- [x] **Groups list / home (4.x):** `GET /groups`; empty state; create CTA. *(+ pull-refresh, sign-out.)*
+- [x] **Create group:** `POST /groups`; navigate to `[id]`.
+- [x] **Group detail `[id]`:** `GET /groups/{id}`; show members entry, invite/share entry. *(owner rename+archive / member leave.)*
+- [x] **Invite/share:** `POST /groups/{id}/invites` → show code + share sheet with deep-link URL. *(`expo-clipboard` copy + RN `Share` + `twenty4://invites/<code>`.)*
+- [x] **Join via code:** input code → `GET /invites/{code}` (preview) → `POST /invites/{code}/join`.
+- [x] **Deep-link join:** configure `expo-router` linking so `/invites/{code}` opens the preview/join screen; handle cold-start + warm-start. *(cold-start + logged-out resume: stash code → sign in → resume.)*
+- [x] **Members:** `GET` members; owner-remove (`DELETE /groups/{id}/members/{userId}`); `POST /groups/{id}/leave`.
+- [x] Wire global states: Offline banner, Error+retry on query failure, Toasts for mutations, Loading skeletons.
+- [x] Document per-device run (LAN IP, `EXPO_PUBLIC_API_URL`, WSL2 mirrored networking) in `RUNNING.md`.
+- [x] (Optional) Expo-web Playwright smoke screenshots of each screen for visual QA. *(`apps/mobile/e2e/`; 6/6 flows green; 16 Ember screenshots.)*
+
+### What shipped / how verified
+
+App lives in `apps/mobile` (expo-router; monorepo Metro resolves `@twenty4/contracts` + `@twenty4/api-client` as TS source). `EXPO_PUBLIC_API_URL` lives in **`apps/mobile/.env`** (Expo loads `.env` from the app dir, not the repo root); `.env.example` committed.
+
+Verified:
+- Whole-repo `bun test` = **125 pass / 0 fail** (incl. a live api-client round-trip).
+- `apps/mobile` `npx tsc --noEmit` clean; `npx expo export --platform web` exit 0 (26 routes).
+- **Playwright web e2e** (`bun run test:e2e:mobile`, `apps/mobile/e2e/`) = **6/6** green: phone sign-up, email sign-up, create group, cross-context invite+join (membership on both rosters), authenticated cold deep-link join, logged-out cold deep-link CTA. e2e gotchas (OTP per-IP cap → flush `otp:*` on redis 6380; email OTP via Mailpit) in `apps/mobile/e2e/README.md`.
+
+Adversarial fixes baked in: suspended/banned/deleted 403 → `SuspendedScreen` (was dead code); deep-link cold-route gate passthrough; api client raises a request-time error on missing env instead of white-screening; logout self-retrigger guard; leave-mutation cache parity.
+
+**Still pending:** on-device (Expo Go on a real Android phone) acceptance — headless web e2e is the proxy, not the gate.
 
 ## 4. Data model & migrations
 
