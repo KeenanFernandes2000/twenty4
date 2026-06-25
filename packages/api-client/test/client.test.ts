@@ -210,6 +210,89 @@ describe("success response validation (drift guard)", () => {
   });
 });
 
+describe("media endpoints", () => {
+  it("mediaInit POSTs /media with auth + body and parses MediaInitRes", async () => {
+    const stub = stubFetch(makeResponse(201, validMediaInitRes()));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const body = {
+      mediaType: "photo" as const,
+      contentType: "image/jpeg",
+      byteSize: 1024,
+      deviceTimezone: "America/New_York",
+    };
+    const res = await client.mediaInit(body);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/media`);
+    expect(stub.calls[0]!.init.method).toBe("POST");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(stub.calls[0]!.init.body).toBe(JSON.stringify(body));
+    expect(res.id).toBe(MEDIA_ID);
+    expect(res.uploadUrl).toContain("http");
+    expect(res.storageKey).toBeTruthy();
+  });
+
+  it("mediaComplete POSTs /media/:id/complete (no body) with auth and parses MediaItemDTO", async () => {
+    const stub = stubFetch(makeResponse(200, validMediaItem()));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const item = await client.mediaComplete(MEDIA_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/media/${MEDIA_ID}/complete`);
+    expect(stub.calls[0]!.init.method).toBe("POST");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(stub.calls[0]!.init.body).toBeUndefined();
+    expect(item.id).toBe(MEDIA_ID);
+    expect(item.processingStatus).toBe("validating");
+  });
+
+  it("getMediaToday GETs /media/today with auth and parses MediaTodayRes", async () => {
+    const stub = stubFetch(makeResponse(200, { dayBucket: "2026-06-25", items: [validMediaItem()] }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getMediaToday();
+    expect(stub.calls[0]!.url).toBe(`${BASE}/media/today`);
+    expect(stub.calls[0]!.init.method).toBe("GET");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.dayBucket).toBe("2026-06-25");
+    expect(res.items.length).toBe(1);
+    expect(res.items[0]!.id).toBe(MEDIA_ID);
+  });
+
+  it("getMediaDownloadUrl GETs /media/:id/download-url with auth and parses DownloadUrlRes", async () => {
+    const stub = stubFetch(
+      makeResponse(200, { id: MEDIA_ID, downloadUrl: "https://cdn.local/x.jpg", expiresInSec: 300 }),
+    );
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getMediaDownloadUrl(MEDIA_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/media/${MEDIA_ID}/download-url`);
+    expect(stub.calls[0]!.init.method).toBe("GET");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.id).toBe(MEDIA_ID);
+    expect(res.expiresInSec).toBe(300);
+  });
+
+  it("deleteMedia DELETEs /media/:id with auth and returns {status:'deleted'}", async () => {
+    const stub = stubFetch(makeResponse(200, { status: "deleted" }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.deleteMedia(MEDIA_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/media/${MEDIA_ID}`);
+    expect(stub.calls[0]!.init.method).toBe("DELETE");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.status).toBe("deleted");
+  });
+
+  it("trips the drift-guard when getMediaToday body is malformed", async () => {
+    const bad = { dayBucket: "2026-06-25", items: [{ id: MEDIA_ID }] }; // item missing required fields
+    stubFetch(makeResponse(200, bad));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    let thrown: unknown;
+    try {
+      await client.getMediaToday();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(ApiError);
+    expect((thrown as Error).message).toContain("failed validation");
+  });
+});
+
 describe("missing baseUrl guard", () => {
   it("does NOT throw at construction, but rejects at request time with a clear ApiError", async () => {
     const prev = process.env.EXPO_PUBLIC_API_URL;
@@ -245,6 +328,7 @@ describe("missing baseUrl guard", () => {
 // .uuid() rejects the lazy all-same-digit form.
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const GROUP_ID = "22222222-2222-4222-8222-222222222222";
+const MEDIA_ID = "33333333-3333-4333-8333-333333333333";
 
 function validUser() {
   return {
@@ -271,5 +355,28 @@ function validGroup() {
     role: "owner",
     memberCount: 1,
     createdAt: "2026-06-25T00:00:00.000Z",
+  };
+}
+
+function validMediaInitRes() {
+  return {
+    id: MEDIA_ID,
+    uploadUrl: "https://storage.local/raw/x?sig=abc",
+    storageKey: "raw/2026-06-25/x",
+  };
+}
+
+function validMediaItem() {
+  return {
+    id: MEDIA_ID,
+    mediaType: "photo",
+    dayBucket: "2026-06-25",
+    validationStatus: "pending",
+    processingStatus: "validating",
+    originalTimestamp: null,
+    durationMs: null,
+    uploadTimestamp: "2026-06-25T00:00:00.000Z",
+    downloadUrl: null,
+    metadataSummary: {},
   };
 }

@@ -17,11 +17,15 @@
 
 import { z } from "zod";
 import {
+  downloadUrlResSchema,
   errorEnvelopeSchema,
   groupDtoSchema,
   inviteDtoSchema,
   invitePreviewDtoSchema,
   joinResultDtoSchema,
+  mediaInitResSchema,
+  mediaItemDtoSchema,
+  mediaTodayResSchema,
   memberDtoSchema,
   sessionDtoSchema,
   userDtoSchema,
@@ -33,12 +37,17 @@ import type {
   Channel,
   CreateGroupReq,
   CreateUserReq,
+  DownloadUrlRes,
   ErrorCode,
   ErrorEnvelope,
   GroupDTO,
   InviteDTO,
   InvitePreviewDTO,
   JoinResultDTO,
+  MediaInitReq,
+  MediaInitRes,
+  MediaItemDTO,
+  MediaTodayRes,
   MemberDTO,
   PatchGroupReq,
   SessionDTO,
@@ -306,6 +315,31 @@ export function createApiClient(opts: ApiClientOptions = {}) {
     },
     leaveGroup(groupId: string): Promise<LeftRes> {
       return request<LeftRes>("POST", `/groups/${encodeURIComponent(groupId)}/leave`, { auth: true });
+    },
+
+    // ── Media ───────────────────────────────────────────────────────────────
+    // Three-step upload flow: mediaInit (presign) → app PUTs raw bytes to
+    // uploadUrl (NOT this client; the mobile transfer layer) → mediaComplete.
+    mediaInit(body: MediaInitReq): Promise<MediaInitRes> {
+      return request<MediaInitRes>("POST", "/media", { body, auth: true, schema: mediaInitResSchema });
+    },
+    mediaComplete(id: string): Promise<MediaItemDTO> {
+      return request<MediaItemDTO>("POST", `/media/${encodeURIComponent(id)}/complete`, {
+        auth: true,
+        schema: mediaItemDtoSchema,
+      });
+    },
+    getMediaToday(): Promise<MediaTodayRes> {
+      return request<MediaTodayRes>("GET", "/media/today", { auth: true, schema: mediaTodayResSchema });
+    },
+    getMediaDownloadUrl(id: string): Promise<DownloadUrlRes> {
+      return request<DownloadUrlRes>("GET", `/media/${encodeURIComponent(id)}/download-url`, {
+        auth: true,
+        schema: downloadUrlResSchema,
+      });
+    },
+    deleteMedia(id: string): Promise<DeletedRes> {
+      return request<DeletedRes>("DELETE", `/media/${encodeURIComponent(id)}`, { auth: true });
     },
   };
 }

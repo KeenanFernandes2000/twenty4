@@ -89,7 +89,7 @@ Anything still needing a call (with the current default).
 | M3 | `M3-groups.md` | Private groups + invite/join + membership authz | ✅ backend done (`b7c666a`) — device check pending |
 | M4 | `M4-storage-upload.md` | Presigned direct-PUT, day-bucket, validation — device-verified | ✅ backend done (`bf3c634`) — **device upload check pending** |
 | M5 | `M5-mobile-shell.md` | Expo Go app on Android: routing, API client, auth + group screens | ✅ done (`166315f`) — e2e-verified, device check pending |
-| M6 | `M6-capture-today.md` | Camera + gallery import, today bucket, upload-progress UI | ⬜ |
+| M6 | `M6-capture-today.md` | Camera + gallery import, today bucket, upload-progress UI | ✅ done — web-e2e-verified, device check pending |
 | M7 | `M7-montage.md` | Remotion render pipeline (BullMQ) → generate → review → publish | ⬜ |
 | M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments | ⬜ |
 | M9 | `M9-ephemerality.md` | 24h hard-delete contract: expire/cleanup jobs, replace flow | ⬜ |

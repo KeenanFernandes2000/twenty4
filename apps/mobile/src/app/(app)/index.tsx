@@ -42,6 +42,7 @@ export default function GroupsHomeScreen() {
 
   const goNew = () => router.push('/(app)/groups/new');
   const goJoin = () => router.push('/(app)/join');
+  const goToday = () => router.push('/(app)/today');
 
   const headerRight = (
     <Button
@@ -105,6 +106,15 @@ export default function GroupsHomeScreen() {
           refreshControl={refreshControl}
           showsVerticalScrollIndicator={false}
         >
+          <View style={{ paddingTop: theme.spacing.base }}>
+            <Button
+              variant="primary"
+              fullWidth
+              title="Today’s captures →"
+              onPress={goToday}
+              testID="go-to-today"
+            />
+          </View>
           <EmptyState
             title="No groups yet"
             subtitle="Create a private group to share moments, or join one with an invite code."
@@ -148,6 +158,14 @@ export default function GroupsHomeScreen() {
         refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
       >
+        <Button
+          variant="primary"
+          fullWidth
+          title="Today’s captures →"
+          onPress={goToday}
+          testID="go-to-today"
+        />
+
         <View style={{ flexDirection: 'row', gap: theme.spacing.base }}>
           <Button
             variant="primary"

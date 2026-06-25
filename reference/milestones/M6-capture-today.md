@@ -1,5 +1,7 @@
 # M6 — Capture & today bucket
 
+> ✅ Implemented & web-e2e-verified — **on-device (Expo Go) acceptance still pending** (the user's real-phone check). M6 is **backend-free: a pure client of M4** (no new tables/endpoints). Shipped: the §9.1 in-app **camera screen** (photo + video, front/back, flash, captured-thumbnail strip), **gallery import** (`expo-image-picker` multi-select), the **platform-split upload transport** (`PutFile` `{done,cancel}` + 0..1 progress; `transfer.web` → foreground XHR, `transfer.native` → `expo-file-system` streaming fallback), the **upload-manager store** (concurrency cap 3; retry/cancel/remove with server-row reclaim), the **today bucket + readiness** banner, and the **`bun run test:e2e:mobile`** verification tool (now 15 flows, +7 new M6 ones).
+
 > Spec phase: P1 · Depends on: M4 (storage & upload pipeline: presigned PUT, day-bucket, validation, `{done,cancel}`/0..1 transport proven on-device), M5 (mobile shell: routing, theme/ui, api-client, auth) · Branch commit: one commit on `rebuild/v2` (merged only after the Android acceptance check passes)
 
 ## 1. Goal
@@ -31,23 +33,31 @@ On a real Android phone in Expo Go, a user can **capture a photo/video in-app** 
 
 ## 3. Tasks (ordered checklist)
 
-- [ ] `npx expo install --fix` for `expo-camera`, `expo-image-picker`, `expo-file-system` (don't hand-pick versions).
-- [ ] Request + handle camera + media-library permissions (Expo Go); permission-denied empty/error states.
-- [ ] **Build the camera screen (§9.1):** preview, capture photo, record/stop video, front/back switch, flash toggle, captured-thumbnail strip, "add to today." Style with Ember tokens from M5.
-- [ ] **Gallery import:** `expo-image-picker` multi-select (photos + videos) → enqueue selected assets for upload.
-- [ ] **Upload subsystem (rebuild M4's proven shape):**
-  - [ ] Define `PutFile` contract: `{ done, cancel }` handle + 0..1 `onProgress`.
-  - [ ] `transfer.ts` (base) — throws "no platform implementation resolved."
-  - [ ] `transfer.web.ts` — delegates to `transfer.foreground.ts`.
-  - [ ] `transfer.native.ts` — detect background-upload module; if present use it, **else** delegate to `transfer.fileSystem.native.ts`; emit a one-time dev warning on fallback.
-  - [ ] `transfer.fileSystem.native.ts` — `expo-file-system/legacy` `createUploadTask` streaming (disk-backed); **keep the full `file://` URI** (do NOT strip).
-  - [ ] `transfer.foreground.ts` — XHR (not `fetch`, which can't report request-body progress); `aborted` flag + `AbortSignal` wired **before** `send()` so a cancel-before-send actually cancels.
-- [ ] **Upload manager/store:** queue of items with `{ id, asset, status: queued|uploading|done|failed, progress, error }`; per-item progress + retry + cancel; concurrency cap.
-- [ ] Client upload flow per item: `POST /media/upload-url` → PUT via `PutFile` (progress → store) → `POST /media` (complete) → on success invalidate today query.
-- [ ] **Upload-progress UI (§9.3 missing-design):** per-item progress, queued/failed badges, retry button on failure, cancel for in-flight.
-- [ ] **Today view:** `GET /media/today`; render items; remove item (`DELETE /media/{id}`) with optimistic update; **"enough content to generate?"** readiness flag (e.g. ≥1/≥ threshold) feeding the M7 CTA.
-- [ ] Wire `fixtures/sample-media/` as the import-test input set; document that M7 reuses it.
-- [ ] Update `RUNNING.md` with the camera/import device walkthrough.
+- [x] `npx expo install --fix` for `expo-camera`, `expo-image-picker`, `expo-file-system` (don't hand-pick versions).
+- [x] Request + handle camera + media-library permissions (Expo Go); permission-denied empty/error states.
+- [x] **Build the camera screen (§9.1):** preview, capture photo, record/stop video, front/back switch, flash toggle, captured-thumbnail strip, "add to today." Style with Ember tokens from M5. *(video gated to native; web is photo-only.)*
+- [x] **Gallery import:** `expo-image-picker` multi-select (photos + videos) → enqueue selected assets for upload.
+- [x] **Upload subsystem (rebuild M4's proven shape):**
+  - [x] Define `PutFile` contract: `{ done, cancel }` handle + 0..1 `onProgress`.
+  - [x] `transfer.ts` (base) — throws "no platform implementation resolved."
+  - [x] `transfer.web.ts` — delegates to `transfer.foreground.ts`.
+  - [x] `transfer.native.ts` — detect background-upload module; if present use it, **else** delegate to `transfer.fileSystem.native.ts`; emit a one-time dev warning on fallback.
+  - [x] `transfer.fileSystem.native.ts` — `expo-file-system/legacy` `createUploadTask` streaming (disk-backed); **keep the full `file://` URI** (do NOT strip).
+  - [x] `transfer.foreground.ts` — XHR (not `fetch`, which can't report request-body progress); `aborted` flag + `AbortSignal` wired **before** `send()` so a cancel-before-send actually cancels.
+- [x] **Upload manager/store:** queue of items with `{ id, asset, status: queued|uploading|done|failed, progress, error }`; per-item progress + retry + cancel; concurrency cap. *(`uploadStore`; cap 3; retry/cancel/remove best-effort `deleteMedia` to reclaim the orphan server row.)*
+- [x] Client upload flow per item: `POST /media` (init → presigned `uploadUrl` + id) → PUT via `PutFile` (progress → store) → `POST /media/{id}/complete` → on success invalidate today query. *(real flow is 3-step, not a single `upload-url` call.)*
+- [x] **Upload-progress UI (§9.3 missing-design):** per-item progress, queued/failed badges, retry button on failure, cancel for in-flight.
+- [x] **Today view:** `GET /media/today`; render items; remove item (`DELETE /media/{id}`) with optimistic update; **"enough content to generate?"** readiness flag (e.g. ≥1/≥ threshold) feeding the M7 CTA. *(query self-stops its 3s poll once nothing is `validating`.)*
+- [x] Wire `fixtures/sample-media/` as the import-test input set; document that M7 reuses it.
+- [x] Update `RUNNING.md` with the camera/import device walkthrough.
+
+### Implementation notes / decisions made
+
+- **Real API flow is 3-step, not a single `upload-url` call.** Per item: `POST /media` (init → `{ id, uploadUrl }`) → PUT bytes to the presigned URL with progress → `POST /media/{id}/complete` (server `HeadObject`+ETag gate) → invalidate today. `api.mediaInit` requires the device IANA timezone (day-window resolution).
+- **Imports send `declaredOriginalTimestamp = now`** so today's no-EXIF gallery photos validate. EXIF-bearing *old* photos are still correctly **rejected by the server** (anti-backfill preserved) — the client declaration only vouches for "captured now," it can't forge an old photo past the server's freshness check. **Product tradeoff:** a user *could* re-save an old image to strip EXIF and pass it off as today's — accepted for the MVP; non-forgeable capture attestation is the P2 fix.
+- **`mediaInit` creates the `daily_media_item` row up front** — so it **counts toward the 50/day cap the moment you queue**, before PUT/complete. Therefore retry/cancel/remove each do a best-effort `deleteMedia(mediaId)` (`reclaimRow`) to free the orphan row; `done` items are never reclaimed.
+- **Video capture is gated to native** (`VIDEO_SUPPORTED = Platform.OS !== 'web'`) — the web build is **photo-only** (matches the e2e/web QA path; on-device video is the native streaming-fallback case).
+- **The today query polls only while an item is `validating`** (just-completed, worker running) — a self-stopping 3s poll. An `uploaded`-but-never-`complete`d row is treated as an **orphan**, not pending, so the poll doesn't spin forever on an abandoned init.
 
 ## 4. Data model & migrations
 

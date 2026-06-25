@@ -20,4 +20,8 @@ export const queryKeys = {
   invites: {
     preview: (code: string) => ['invites', 'preview', code] as const,
   },
+  media: {
+    today: ['media', 'today'] as const,
+    item: (id: string) => ['media', 'item', id] as const,
+  },
 } as const;

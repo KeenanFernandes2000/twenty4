@@ -104,6 +104,8 @@ apps/mobile/test-results/
 apps/mobile/e2e/test-results/
 apps/mobile/playwright-report/
 apps/mobile/e2e/playwright-report/
+# Runtime-generated EXIF/no-EXIF fixtures (built fresh each run by m6.e2e.ts).
+apps/mobile/e2e/.fixtures-generated/
 **/test-results/
 **/playwright-report/
 **/playwright/.cache/

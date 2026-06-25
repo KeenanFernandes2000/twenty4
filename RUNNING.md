@@ -198,3 +198,53 @@ join, then captures Ember-theme screenshots under `apps/mobile/e2e/screenshots/`
 
 > **The M5 acceptance gate is on-device interactive testing** (Expo Go on a real
 > Android phone) — the web e2e is the proxy, not the gate.
+
+---
+
+## Capture & today bucket (M6)
+
+Same app, same stack (docker + API + **worker** — the worker validates uploads).
+M6 adds in-app camera capture, gallery import, per-item upload progress, and
+today's bucket. No new env — it's a pure client of M4's media endpoints.
+
+**Reach the Today screen:** from the **Groups home**, tap **"Today's captures →"**.
+
+**Capture in-app:** on Today, open the **camera** (§9.1 screen). Controls: shutter,
+photo/video **mode** toggle, **front/back** switch, **flash** toggle. Take a photo
+or (native only — web is photo-only) **record/stop** a video. Captured items show
+in the thumbnail strip and enqueue for upload.
+
+**Import from the gallery:** **Import** opens `expo-image-picker` multi-select
+(photos + videos) — pick from `fixtures/sample-media/`; selected assets enqueue.
+
+**Watch upload progress:** each queued item streams to storage with a **0..1
+progress bar** and queued/failed badges. **Cancel** an in-flight upload, **retry**
+a failed one, or **remove** an item (each best-effort frees the server row it
+reserved). Up to **3** upload concurrently.
+
+**Land in today's bucket:** completed items appear in **today's list** (a 3s poll
+runs only while an item is `validating`, then self-stops). A **readiness banner**
+("enough content to generate?") reflects the count and gates the M7 generate CTA.
+
+> **Known behavior (by design):** imported photos whose **EXIF proves they're
+> older** than today's 4am→4am window are marked **"Rejected"** (anti-backfill —
+> the server's freshness gate). **In-app captures and today's photos validate**
+> (imports declare `capturedAt = now`; only forgeable old EXIF is rejected).
+
+### Verify the capture build (M6 web e2e)
+
+The same Playwright command now covers **M5 + M6** — **15 flows** (the 8 M5 auth/
+group flows plus **7 new M6 capture/import/upload/today** flows):
+
+```bash
+bun run test:e2e:mobile                 # needs the stack up (incl. worker) + chromium
+```
+
+It drives the web build: import from `fixtures/sample-media/` → foreground upload
+with progress → item lands in `GET /media/today`; plus cancel (incl.
+cancel-before-send), retry, remove, and the readiness-threshold flip. The native
+`expo-file-system` streaming branch is **device-verified manually** (not headless).
+
+> **The M6 acceptance gate is on-device interactive testing** (capture a video AND
+> import a photo in Expo Go, both upload with visible progress and land in today's
+> bucket) — the web e2e is the proxy, not the gate.

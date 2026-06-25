@@ -18,7 +18,7 @@
     "db:migrate": "cd packages/contracts && drizzle-kit migrate",
     "dev:mobile": "cd apps/mobile && npx expo start",
     "web:mobile": "cd apps/mobile && npx expo start --web",
-    "test:e2e:mobile": "cd apps/mobile/e2e && npx playwright test --config=e2e/playwright.config.ts",
+    "test:e2e:mobile": "cd apps/mobile && npx playwright test --config=e2e/playwright.config.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "bun test"

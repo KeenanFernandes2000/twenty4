@@ -2,7 +2,9 @@
 
 The twenty4 Expo app (Expo Go, Android-first, JS-only libs). Shipped in **M5** —
 a working Expo Go app: full OTP auth (phone+email) → profile setup → groups +
-invite/join, all on the re-implemented Ember dark theme.
+invite/join, all on the re-implemented Ember dark theme. **M6** adds capture:
+in-app camera (photo + video), gallery import, per-item upload progress, and
+today's bucket.
 
 ## Run
 
@@ -28,7 +30,11 @@ device-networking checklist and the full M5 run/verify story.
   providers, holds splash until ready) and hosts `AuthGate` (segment-based; routes
   `(auth)` vs `(app)`, global `SuspendedScreen`, passes through `invites/[code]` +
   `dev-gallery`). `(auth)/` = welcome → sign-in → verify → profile-setup → legal.
-  `(app)/` = groups list / create / detail / members / invite. `invites/[code].tsx`
+  `(app)/` = groups list / create / detail / members / invite, plus **M6**:
+  `camera.tsx` (§9.1 capture — photo + video, front/back, flash, thumbnail strip;
+  video gated to native) and `today/` (today's bucket: gallery import, per-item
+  upload progress with retry/cancel/remove, and the "enough to generate?" readiness
+  banner). `invites/[code].tsx`
   = deep-link join (cold-start + logged-out resume).
 - `src/theme/` — Ember dark-theme tokens (colors, Nunito type scale, spacing,
   radii, shadows, per-platform `shadow()`) + `ThemeProvider`/`useTheme`.
@@ -37,9 +43,16 @@ device-networking checklist and the full M5 run/verify story.
 - `src/stores/` — zustand `authStore` (token + UserDTO + 5-state machine:
   loading/unauthenticated/needs-profile/suspended/authenticated); platform-split
   secure storage (`secureStore.native.ts` expo-secure-store / `secureStore.web.ts`
-  localStorage, key `twenty4.session_token`).
+  localStorage, key `twenty4.session_token`). **M6:** `uploadStore` — the per-item
+  upload queue (concurrency cap 3; progress/retry/cancel/remove with best-effort
+  server-row reclaim via `deleteMedia`).
 - `src/lib/` — react-query `queryClient` + `queryKeys`; typed `@twenty4/api-client`
-  singleton (`api.ts`) with Bearer injection + `onUnauthorized → clear()`.
+  singleton (`api.ts`) with Bearer injection + `onUnauthorized → clear()`. **M6:**
+  `media.ts` (3-step flow `POST /media` → presigned PUT → `POST /media/{id}/complete`,
+  + the today query with self-stopping poll) and `lib/upload/` — the platform-split
+  transport (`PutFile` `{done,cancel}` + 0..1 progress; `transfer.web` → foreground
+  XHR, `transfer.native` → `expo-file-system` streaming fallback; base `transfer.ts`
+  is the "no platform impl" tripwire).
 - `metro.config.js` — Bun-monorepo wiring (watches the repo root, resolves the
   sibling workspace packages `@twenty4/contracts` / `@twenty4/api-client` as raw
   TS source, follows Bun's symlinks).
@@ -65,7 +78,8 @@ See `RUNNING.md` at the repo root for the device-networking checklist.
 bun run test:e2e:mobile   # Playwright (web build) — needs the stack up + chromium
 ```
 
-Drives the web build through sign-in → groups → invite/join (6 flows incl.
-cross-context invite+join and cold deep-link). Captures Ember-theme screenshots
-under `e2e/screenshots/`. Gotchas (OTP per-IP cap, email OTP via Mailpit) in
-`e2e/README.md`.
+Drives the web build through sign-in → groups → invite/join, plus **M6** capture/
+import/upload/today — **15 flows** (8 M5 + 7 M6: import → upload-with-progress →
+lands in today, cancel incl. cancel-before-send, retry, remove, readiness flip).
+Captures Ember-theme screenshots under `e2e/screenshots/`. Gotchas (OTP per-IP cap,
+email OTP via Mailpit) in `e2e/README.md`.

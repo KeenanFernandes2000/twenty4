@@ -98,5 +98,13 @@ describe("live integration (skips if API down)", () => {
     // 6. listGroups — must include the just-created group.
     const groups = await client.listGroups();
     expect(groups.some((g) => g.id === group.id)).toBe(true);
+
+    // 7. getMediaToday — a fresh user has no media → empty bucket. We exercise the
+    //    JSON endpoint only (no binary PUT; that's the mobile e2e's job). Reuses
+    //    the bearer captured above on the same client.
+    const today = await client.getMediaToday();
+    expect(typeof today.dayBucket).toBe("string");
+    expect(Array.isArray(today.items)).toBe(true);
+    expect(today.items.length).toBe(0);
   });
 });

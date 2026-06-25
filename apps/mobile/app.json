@@ -43,7 +43,22 @@
           "imageWidth": 200
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "twenty4 uses your camera to capture photos and videos for your group's daily montage.",
+          "microphonePermission": "twenty4 uses your microphone to record audio for videos in your group's daily montage.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "twenty4 accesses your photos so you can import them into your group's daily montage.",
+          "cameraPermission": "twenty4 uses your camera to capture photos and videos for your group's daily montage."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
