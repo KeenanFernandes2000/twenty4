@@ -1,6 +1,6 @@
 # M5 — Mobile shell
 
-> ✅ Implemented & e2e-verified (commit `<pending>`) — **on-device (Expo Go) acceptance still pending** (the user's real-phone check). Built on Expo SDK 56.0.12 / RN 0.85.3 / expo-router 56.2.11 (versions pinned via `expo install --fix`).
+> ✅ Implemented & e2e-verified (commit `166315f`) — **on-device (Expo Go) acceptance still pending** (the user's real-phone check). Built on Expo SDK 56.0.12 / RN 0.85.3 / expo-router 56.2.11 (versions pinned via `expo install --fix`).
 
 > Spec phase: P1 · Depends on: M0 (Bun monorepo + Android↔backend networking), M1 (API skeleton + error envelope/CORS), M2 (auth: phone+email OTP, sessions, guards), M3 (groups + invite/join + membership authz) · Branch commit: one commit on `rebuild/v2` (merged only after the Android acceptance check passes)
 
