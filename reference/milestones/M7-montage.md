@@ -24,6 +24,7 @@ On-device: a user with media in today's bucket taps generate → the server enqu
   - **`montage` + `montage_group_visibility` tables** (montage carries `edl` jsonb, `source_media_ids`, `theme`, `music_id`, status, paths, day_bucket). **One recap per user/group/day.**
   - **Mobile (Expo Go):** the two **§9 missing-design** screens — **generating/progress** and **review** (preview, expiry info, group selection, regenerate, remove-media-and-regenerate) — built here.
   - **§7.5 render gate harness** run against `fixtures/sample-media/`.
+  - **Per-media-item video poster thumbnails (carried from M6 §12).** Extend the **validate-media** worker (M4/M6) so each `daily_media_item` **video** gets a representative frame extracted (ffmpeg — already on the box for M7) → stored in the already-provisioned `thumbnails` bucket; expose a nullable `thumbnailUrl` on `MediaItemDTO`; the **M6 Today-bucket card renders it**, replacing the current placeholder play-tile. Small enhancement riding on M7's Node/ffmpeg tooling + already-wired `thumbnails` bucket; photos keep using `downloadUrl`. (Distinct from the montage thumbnail — this is the per-clip poster shown in M6's today view.)
 - **Explicitly out of scope (and which later milestone owns it):**
   - **Feed, reactions, comments, montage download-url, `DELETE /montages/:id` (user delete)** → **M8** (social half of the loop).
   - **`POST /montages/:id/replace`, expiry/cleanup jobs, raw-media 60-min-grace purge, the 24h hard-delete contract, S3 lifecycle defense-in-depth, audit-log tombstones** → **M9** (ephemerality). *M7 publishes; M9 owns everything about deletion/expiry except render-failure cleanup, which M7 must do itself.*
@@ -53,6 +54,7 @@ On-device: a user with media in today's bucket taps generate → the server enqu
 - [ ] **Mobile — generating/progress screen (§9.2 missing-design).** After `POST /montages` 202, poll `GET /montages/:id`; show indeterminate/progress + estimated wait; cancel returns to today. Transition to review on `draft_ready`, to render-fail state on `failed`.
 - [ ] **Mobile — review screen (§9 missing-design).** Inline **mp4 preview** (plays on-device), **expiry info** ("deleted 24h after publish"), **group multi-select** (from `GET /groups`), **theme/music** (from `GET /montages/options`), **regenerate**, **remove-media-and-regenerate** (drops items → regenerate with trimmed `mediaIds`), **publish** → success.
 - [ ] **§7.5 render gate harness.** Live-stack test (below) against `fixtures/sample-media/`.
+- [ ] **Video poster thumbnails (carried from M6 §12).** In the **validate-media** worker, after a video validates, extract a poster frame (ffmpeg, already on the box) → upload to the `thumbnails` bucket at a deterministic key; persist `thumbnail_path` on `daily_media_item`. Add a nullable signed-GET `thumbnailUrl` to `MediaItemDTO` and presign it in the media route's `toItemDto`. Update the M6 `TodayItemCard` to prefer `thumbnailUrl` (fall back to the play-tile when null). Migration: add `daily_media_item.thumbnail_path`.
 - [ ] **Acceptance run** on a real Android device (§8).
 
 ## 4. Data model & migrations
@@ -64,6 +66,7 @@ Migration `00xx_montage` (per-domain, after M4's media migration):
   - **Unique guard** for "one recap per user/group/day": enforced via `montage_group_visibility` insert + a per-`(user_id, day_bucket)` uniqueness on the *generating/published* recap (partial unique index, or app-layer check on publish — pick app-layer to allow regenerate-before-publish).
 - **`montage_group_visibility`** — `montage_id` FK · `group_id` FK · PK(`montage_id`,`group_id`). Drives one-render→many-groups (Q1) + per-group feed authz (M8).
 - **Enums:** add `montage_status` and (if not from M4) `theme` to `enums.ts` so drizzle-kit emits `CREATE TYPE`.
+- **`daily_media_item.thumbnail_path` text NULL (carried from M6 §12)** — add via this milestone's migration so the validate-media worker can record each video's poster-frame key (served as `MediaItemDTO.thumbnailUrl`). Touches the M4 table only; no change to the montage tables.
 
 ## 5. API endpoints
 | Method | Path | Auth | Purpose |
@@ -97,6 +100,7 @@ Run against real Postgres + Redis + MinIO + a real Remotion render (recap: this 
 - **Authz:** non-owner `GET`/`publish` → 403; publish to a non-member group → `GROUP_NOT_MEMBER`.
 - **EDL contract:** `.strict()` schema rejects extra keys / wrong literals; `Σ` segment durations == 30000.
 - **BullMQ jobId:** assert jobId contains no `:` (delayed scheduling regression guard).
+- **Video poster (carried from M6 §12):** after a video validates, assert a poster object exists in the `thumbnails` bucket and `GET /media/today` returns a non-null `thumbnailUrl` for that item; a photo item's `thumbnailUrl` may be null (it renders from `downloadUrl`).
 
 ## 8. Acceptance criteria
 - `POST /montages` returns **202** and enqueues; `GET /montages/:id` polls through `generating → draft_ready`.
@@ -105,6 +109,7 @@ Run against real Postgres + Redis + MinIO + a real Remotion render (recap: this 
 - Concurrent regenerate is guarded to one in-flight render.
 - `POST /montages/:id/publish` writes `montage_group_visibility` for multiple groups, sets `published_at`/`expiry_at = +24h`, enforces **one recap per user/group/day**, and is **idempotent**.
 - **Android device check (required):** on a real Android device in Expo Go — capture/import media (M6) → **generate** (see the generating screen) → **review** (the produced mp4 **plays back on-device**) → **publish** to ≥1 group → publish-success. The same mp4 is fetchable via a signed GET.
+- **Video posters (carried from M6 §12):** in the M6 Today bucket, video items show a **real poster frame** (served via `MediaItemDTO.thumbnailUrl`), not just the placeholder play-tile.
 
 ## 9. Dependencies & prerequisites
 - **From prior milestones:** M0 (Redis + MinIO `montages`/`thumbnails` buckets + `fixtures/sample-media/` populated), M1 (error envelope/content-type/CORS), M2 (`requireSession`), M3 (group membership), M4 (presign + `daily_media_item` + day_bucket), M6 (media actually in today's bucket).
