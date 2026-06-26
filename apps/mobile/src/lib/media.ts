@@ -4,13 +4,15 @@
 //   • useTodayBucket()  — the GET /media/today query, with a self-stopping poll
 //                         that runs WHILE the server is still validating items and
 //                         stops once everything has settled.
-//   • readiness()       — a pure summary over the items (counts + a soft "ready"
-//                         hint that ≥1 valid item enables "generate").
+//   • readiness()       — a pure summary over the items (counts + a "ready" hint
+//                         that ≥ MONTAGE_MIN_MEDIA valid items enables "generate",
+//                         matching the server floor so the gate never contradicts it).
 //   • useDeleteMedia()  — an OPTIMISTIC delete mutation (remove-then-rollback).
 //
 // Imports are top-level: api/queryClient/queryKeys none of which import this
 // module → no cycle. No screen is imported here.
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { MONTAGE_MIN_MEDIA } from '@twenty4/contracts';
 import type { MediaItemDTO, MediaTodayRes } from '@twenty4/contracts';
 import { api } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
@@ -58,8 +60,9 @@ export interface TodayReadiness {
 }
 
 /**
- * Summarize today's items. `ready` is a SOFT hint (not a hard gate): ≥1 valid
- * item enables "generate" per the milestone's open decision (threshold = 1).
+ * Summarize today's items. `ready` gates the "Generate" CTA on ≥ MONTAGE_MIN_MEDIA
+ * valid items — the SAME floor the server enforces (it 422s NOT_ENOUGH_MEDIA below
+ * it), so the mobile gate never green-lights a generate the server would reject.
  */
 export function readiness(items: MediaItemDTO[]): TodayReadiness {
   let validCount = 0;
@@ -75,7 +78,7 @@ export function readiness(items: MediaItemDTO[]): TodayReadiness {
     validCount,
     pendingCount,
     invalidCount,
-    ready: validCount >= 1,
+    ready: validCount >= MONTAGE_MIN_MEDIA,
   };
 }
 

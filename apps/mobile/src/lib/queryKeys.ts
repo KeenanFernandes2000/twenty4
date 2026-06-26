@@ -24,4 +24,8 @@ export const queryKeys = {
     today: ['media', 'today'] as const,
     item: (id: string) => ['media', 'item', id] as const,
   },
+  montage: {
+    detail: (id: string) => ['montage', id] as const,
+    options: ['montage', 'options'] as const,
+  },
 } as const;

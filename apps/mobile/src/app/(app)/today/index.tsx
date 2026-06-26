@@ -21,6 +21,7 @@ import {
 import { ReadinessBanner } from '@/components/media/ReadinessBanner';
 import { UploadCard } from '@/components/media/UploadCard';
 import { TodayItemCard } from '@/components/media/TodayItemCard';
+import { useMontageStore, useMontageStarting } from '@/stores/montageStore';
 
 export default function TodayScreen() {
   const theme = useTheme();
@@ -32,6 +33,16 @@ export default function TodayScreen() {
   const retry = useUploadStore((s) => s.retry);
   const cancel = useUploadStore((s) => s.cancel);
   const clearFinished = useUploadStore((s) => s.clearFinished);
+
+  // M7: kick off the montage render. startGenerate POSTs /montages then navigates
+  // to the generating host screen; `starting` drives the button's loading state.
+  const startGenerate = useMontageStore((s) => s.startGenerate);
+  const generating = useMontageStarting();
+  const onGenerate = () => {
+    void startGenerate({}).catch(() => {
+      toast.show({ type: 'error', message: useMontageStore.getState().error ?? 'Could not start montage' });
+    });
+  };
 
   const serverItems = todayQuery.data?.items ?? [];
   const serverIds = useMemo(() => new Set(serverItems.map((it) => it.id)), [serverItems]);
@@ -164,8 +175,12 @@ export default function TodayScreen() {
           />
         </View>
 
-        {/* Soft readiness hint (M7 generate gate) */}
-        <ReadinessBanner readiness={readiness(serverItems)} />
+        {/* Soft readiness hint + M7 generate gate */}
+        <ReadinessBanner
+          readiness={readiness(serverItems)}
+          onGenerate={onGenerate}
+          generating={generating}
+        />
 
         {/* In-flight local uploads (deduped against the server bucket) */}
         {visibleUploads.length > 0 ? (

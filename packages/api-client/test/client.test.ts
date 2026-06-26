@@ -377,6 +377,8 @@ function validMediaItem() {
     durationMs: null,
     uploadTimestamp: "2026-06-25T00:00:00.000Z",
     downloadUrl: null,
+    // M7 §12: MediaItemDTO now carries a nullable video-poster URL (null for photos).
+    thumbnailUrl: null,
     metadataSummary: {},
   };
 }

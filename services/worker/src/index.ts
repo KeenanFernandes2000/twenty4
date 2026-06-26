@@ -9,11 +9,30 @@ import { createWorkerDb, type WorkerDb } from "./db.ts";
 import { createWorkerS3, type WorkerS3 } from "./s3.ts";
 import { processValidateMedia, type ValidateMediaJobData } from "./validateMedia.ts";
 import { redisConnection, VALIDATE_MEDIA_QUEUE, Worker } from "./queue.ts";
+import { startRenderMontageWorker } from "./montage/worker.ts";
 
 export { processValidateMedia } from "./validateMedia.ts";
 export { createWorkerDb } from "./db.ts";
 export { createWorkerS3 } from "./s3.ts";
 export { VALIDATE_MEDIA_QUEUE, validateMediaJobId, createValidateMediaQueue } from "./queue.ts";
+
+// M7 montage render pipeline — re-exported so live-stack tests can drive a render
+// synchronously (mirrors the validate-media testability).
+export { processRenderMontage } from "./montage/renderMontage.ts";
+export type { RenderMontageDeps, RenderMontageResult } from "./montage/renderMontage.ts";
+export {
+  RENDER_MONTAGE_QUEUE,
+  renderMontageJobId,
+  createRenderMontageQueue,
+} from "./montage/queue.ts";
+export type { RenderMontageJobData } from "./montage/queue.ts";
+export { startRenderMontageWorker } from "./montage/worker.ts";
+export { RemotionRenderer } from "./render/RemotionRenderer.ts";
+export type { Renderer, RenderResult } from "./render/Renderer.ts";
+export { scoreClip } from "./intelligence/scoring/score.ts";
+export type { ScoredClip, ScoreClipInput } from "./intelligence/scoring/score.ts";
+export { buildEdl } from "./intelligence/edl/build.ts";
+export { selectTrack, loadManifest, loadBeatGrid } from "./montage/tracks.ts";
 
 export interface StartWorkerDeps {
   env: Env;
@@ -40,11 +59,13 @@ export function startWorker(): void {
   const env = parseEnv(process.env);
   const db = createWorkerDb(env.DATABASE_URL);
   const s3 = createWorkerS3(env);
-  const worker = startValidateMediaWorker({ env, db, s3 });
+  const validateWorker = startValidateMediaWorker({ env, db, s3 });
   console.log(`[worker] validate-media worker started (concurrency 1) on ${VALIDATE_MEDIA_QUEUE}`);
+  const montageWorker = startRenderMontageWorker({ env, db, s3 });
+  console.log(`[worker] render-montage worker started (concurrency 1) on render-montage`);
 
   const shutdown = async () => {
-    await worker.close();
+    await Promise.all([validateWorker.close(), montageWorker.close()]);
     await db.sql.end({ timeout: 5 });
     process.exit(0);
   };

@@ -6,7 +6,8 @@
   "workspaces": [
     "packages/*",
     "services/*",
-    "apps/*"
+    "apps/*",
+    "infra/*"
   ],
   "scripts": {
     "dev": "bun --watch services/api/src/index.ts",
@@ -18,6 +19,7 @@
     "db:migrate": "cd packages/contracts && drizzle-kit migrate",
     "dev:mobile": "cd apps/mobile && npx expo start",
     "web:mobile": "cd apps/mobile && npx expo start --web",
+    "dev:all": "concurrently -k -n api,worker,expo -c blue,magenta,green \"bun run dev:api\" \"bun run dev:worker\" \"bun run dev:mobile\"",
     "test:e2e:mobile": "cd apps/mobile && npx playwright test --config=e2e/playwright.config.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -27,6 +29,7 @@
     "@eslint/js": "^9.39.0",
     "@twenty4/config": "workspace:*",
     "@types/bun": "^1.3.12",
+    "concurrently": "^10.0.3",
     "eslint": "^9.39.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",

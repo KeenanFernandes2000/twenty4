@@ -17,6 +17,7 @@
 
 import { z } from "zod";
 import {
+  createMontageResSchema,
   downloadUrlResSchema,
   errorEnvelopeSchema,
   groupDtoSchema,
@@ -27,6 +28,9 @@ import {
   mediaItemDtoSchema,
   mediaTodayResSchema,
   memberDtoSchema,
+  montageDtoSchema,
+  montageOptionsResSchema,
+  publishMontageResSchema,
   sessionDtoSchema,
   userDtoSchema,
 } from "@twenty4/contracts";
@@ -36,6 +40,8 @@ import type {
   AuthVerifyReq,
   Channel,
   CreateGroupReq,
+  CreateMontageReq,
+  CreateMontageRes,
   CreateUserReq,
   DownloadUrlRes,
   ErrorCode,
@@ -49,7 +55,12 @@ import type {
   MediaItemDTO,
   MediaTodayRes,
   MemberDTO,
+  MontageDTO,
+  MontageOptionsRes,
   PatchGroupReq,
+  PublishMontageReq,
+  PublishMontageRes,
+  RegenerateMontageReq,
   SessionDTO,
   UpdateMeReq,
   UserDTO,
@@ -340,6 +351,38 @@ export function createApiClient(opts: ApiClientOptions = {}) {
     },
     deleteMedia(id: string): Promise<DeletedRes> {
       return request<DeletedRes>("DELETE", `/media/${encodeURIComponent(id)}`, { auth: true });
+    },
+
+    // ── Montage ─────────────────────────────────────────────────────────────
+    // Generate → poll → review → publish. `createMontage` enqueues a render and
+    // returns 202 {montageId,status:'generating'}; the client then polls
+    // `getMontage(id)` until status flips to draft_ready / failed. `regenerate`
+    // re-enqueues (optionally with a trimmed `mediaIds` for remove-and-regenerate).
+    createMontage(body: CreateMontageReq): Promise<CreateMontageRes> {
+      return request<CreateMontageRes>("POST", "/montages", { body, auth: true, schema: createMontageResSchema });
+    },
+    getMontage(id: string): Promise<MontageDTO> {
+      return request<MontageDTO>("GET", `/montages/${encodeURIComponent(id)}`, {
+        auth: true,
+        schema: montageDtoSchema,
+      });
+    },
+    regenerateMontage(id: string, body: RegenerateMontageReq = {}): Promise<CreateMontageRes> {
+      return request<CreateMontageRes>("POST", `/montages/${encodeURIComponent(id)}/regenerate`, {
+        body,
+        auth: true,
+        schema: createMontageResSchema,
+      });
+    },
+    getMontageOptions(): Promise<MontageOptionsRes> {
+      return request<MontageOptionsRes>("GET", "/montages/options", { auth: true, schema: montageOptionsResSchema });
+    },
+    publishMontage(id: string, body: PublishMontageReq): Promise<PublishMontageRes> {
+      return request<PublishMontageRes>("POST", `/montages/${encodeURIComponent(id)}/publish`, {
+        body,
+        auth: true,
+        schema: publishMontageResSchema,
+      });
     },
   };
 }

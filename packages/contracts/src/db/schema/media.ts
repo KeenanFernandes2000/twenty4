@@ -30,6 +30,10 @@ export const dailyMediaItem = pgTable(
     mediaType: mediaType("media_type").notNull(),
     // S3 object key within the raw bucket, e.g. media/<userId>/<id>.
     storagePath: text("storage_path").notNull(),
+    // S3 object key in the thumbnails bucket for a video poster frame (M7 §12).
+    // Nullable: photos and not-yet-processed videos have none; the validate-media
+    // worker populates it for videos.
+    thumbnailPath: text("thumbnail_path"),
     // Resolved capture time (validation hierarchy) — nullable until the worker runs.
     originalTimestamp: timestamp("original_timestamp", { withTimezone: true }),
     uploadTimestamp: timestamp("upload_timestamp", { withTimezone: true }).notNull().defaultNow(),

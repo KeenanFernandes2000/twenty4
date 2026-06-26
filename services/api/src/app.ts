@@ -12,6 +12,7 @@ import { AppError, NotFoundError, toErrorEnvelope, type Env, type ErrorEnvelope 
 import { registerAuth } from "./auth/index.ts";
 import { registerGroups } from "./groups/index.ts";
 import { registerMedia } from "./media/index.ts";
+import { registerMontage } from "./montage/index.ts";
 import type { DbClient } from "./db.ts";
 import type { RedisClient } from "./redis.ts";
 
@@ -26,6 +27,9 @@ export interface BuildAppOptions {
   // M4: optional injected validate-media queue (tests share/inspect one). When
   // omitted, registerMedia creates a queue from REDIS_URL.
   mediaQueue?: import("bullmq").Queue<import("./media/queue.ts").ValidateMediaJobData>;
+  // M7: optional injected render-montage queue (tests share/inspect one). When
+  // omitted, registerMontage creates a queue from REDIS_URL.
+  montageQueue?: import("bullmq").Queue<import("./montage/queue.ts").RenderMontageJobData>;
 }
 
 // Explicit CORS method list. v1's bug: @fastify/cors defaults to GET/HEAD/POST,
@@ -203,6 +207,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // ── M4 media subsystem (/media) — reuses the BA auth instance + S3 + the
     // validate-media queue. Registered only alongside auth.
     await registerMedia(app, { db, env: opts.env, auth, queue: opts.mediaQueue });
+    // ── M7 montage subsystem (/montages) — reuses the BA auth instance + S3 + the
+    // render-montage queue. Registered only alongside auth.
+    await registerMontage(app, { db, env: opts.env, auth, queue: opts.montageQueue });
   }
 
   return app;

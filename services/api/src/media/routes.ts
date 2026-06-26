@@ -25,6 +25,7 @@ import {
   headObject,
   presignGet,
   presignPut,
+  presignThumbGet,
   rawKey,
   type S3Deps,
 } from "./s3.ts";
@@ -70,6 +71,9 @@ async function toItemDto(s3: S3Deps, row: MediaRow): Promise<MediaItemDTO> {
     durationMs: row.durationMs ?? null,
     uploadTimestamp: row.uploadTimestamp.toISOString(),
     downloadUrl,
+    // Video poster frame (M7 §12). The validate-media worker populates
+    // thumbnail_path for videos; photos/not-yet-processed videos stay null.
+    thumbnailUrl: row.thumbnailPath ? await presignThumbGet(s3, row.thumbnailPath) : null,
     metadataSummary: (row.metadataSummary ?? {}) as Record<string, unknown>,
   };
 }

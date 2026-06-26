@@ -18,6 +18,9 @@
 // the live stack (concurrency 1 → deterministic) AND the BullMQ worker can call it.
 import { eq, sql } from "drizzle-orm";
 import exifr from "exifr";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dailyMediaItem } from "@twenty4/contracts/db";
 import {
   MAX_VIDEO_DURATION_MS,
@@ -27,8 +30,9 @@ import {
   sniffMatchesMediaType,
 } from "@twenty4/contracts";
 import type { WorkerDb } from "./db.ts";
-import { getObjectBytes, headObject, type WorkerS3 } from "./s3.ts";
+import { getObjectBytes, headObject, putObject, thumbnailKey, type WorkerS3 } from "./s3.ts";
 import { probeDurationMs } from "./probe.ts";
+import { extractPosterJpeg } from "./ffmpeg.ts";
 
 export interface ValidateMediaDeps {
   db: WorkerDb;
@@ -48,6 +52,41 @@ export interface ValidateMediaResult {
 
 // How far the device clock may differ from server time before we flag it (ms).
 const DEVICE_CLOCK_SKEW_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+// Video poster (M7 §12) — BEST-EFFORT. After a video validates, extract a
+// representative frame (~10% in) with ffmpeg from the already-downloaded bytes,
+// upload it to the thumbnails bucket at thumbnailKey(userId,itemId), and return that
+// key for thumbnail_path. ANY failure (no ffmpeg, extraction error, S3 error) returns
+// null — the item stays valid and the client falls back to the play-tile. A poster
+// failure must NEVER fail validation.
+async function extractAndUploadPoster(
+  s3: WorkerS3,
+  userId: string,
+  itemId: string,
+  bytes: Buffer,
+  durationMs: number | null,
+): Promise<string | null> {
+  let dir: string | null = null;
+  try {
+    dir = await mkdtemp(join(tmpdir(), "t4poster-"));
+    const src = join(dir, "video");
+    const out = join(dir, "poster.jpg");
+    await writeFile(src, bytes);
+    // ~10% in (a representative frame, not the often-black first frame); default 0.5s.
+    const atSec = durationMs && durationMs > 0 ? (durationMs * 0.1) / 1000 : 0.5;
+    const ok = await extractPosterJpeg(src, atSec, out);
+    if (!ok) return null;
+    const posterBytes = await readFile(out);
+    const key = thumbnailKey(userId, itemId);
+    await putObject(s3, s3.thumbnailsBucket, key, posterBytes, "image/jpeg");
+    return key;
+  } catch (err) {
+    console.error(`[validate-media] poster extraction failed for ${itemId}:`, (err as Error).message);
+    return null;
+  } finally {
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 type TsSource = "exif" | "media-library" | "file-creation" | "none";
 
@@ -157,6 +196,7 @@ async function runValidation(
     proc?: "valid" | "invalid" | "failed",
     originalTimestamp?: Date | null,
     durationMs?: number | null,
+    thumbnailPath?: string | null,
   ): Promise<ValidateMediaResult> => {
     const newSummary = { ...summary, ...extra, freshnessNotProven: true };
     await db.db
@@ -167,6 +207,7 @@ async function runValidation(
         metadataSummary: newSummary,
         ...(originalTimestamp !== undefined ? { originalTimestamp } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(thumbnailPath !== undefined ? { thumbnailPath } : {}),
       })
       .where(eq(dailyMediaItem.id, mediaId));
     return {
@@ -286,6 +327,13 @@ async function runValidation(
   const deviceClockSkewFlag =
     deviceClockDeltaMs !== null && deviceClockDeltaMs > DEVICE_CLOCK_SKEW_THRESHOLD_MS;
 
+  // Video poster (M7 §12) — best-effort, only for videos; photos keep thumbnail_path
+  // null (client renders from downloadUrl). Failure never blocks the valid verdict.
+  let thumbnailPath: string | null | undefined = undefined;
+  if (row.mediaType === "video") {
+    thumbnailPath = await extractAndUploadPoster(s3, row.userId, mediaId, bytes, durationMs);
+  }
+
   // Accept.
   return finalize(
     "valid",
@@ -300,5 +348,6 @@ async function runValidation(
     "valid",
     ts,
     durationMs,
+    thumbnailPath,
   );
 }

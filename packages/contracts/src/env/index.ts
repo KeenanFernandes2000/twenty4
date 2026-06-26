@@ -2,6 +2,7 @@
 // Single source of truth for the environment every service parses at startup.
 // Services call parseEnv() and fail fast on a non-conforming environment.
 import { z } from "zod";
+import { MONTAGE_MIN_MEDIA } from "../dto/montage.ts";
 
 // Coerce a string env var into an int port, with sane bounds.
 const port = z.coerce.number().int().min(1).max(65535);
@@ -81,6 +82,20 @@ export const envSchema = z.object({
   INVITE_CREATE_CAP: z.coerce.number().int().min(1).default(30),
   INVITE_JOIN_CAP: z.coerce.number().int().min(1).default(60),
   INVITE_WINDOW_SEC: z.coerce.number().int().min(1).default(900),
+
+  // ── Montage render (M7) ─────────────────────────────────────────────────────
+  // Worker-side Remotion render knobs. Concurrency 1 for the single-worker
+  // prototype (env-overridable to tune the gate's p95). RENDER_GL is the literal
+  // string "null" → maps to chromiumOptions.gl = null (~9× faster than 'angle';
+  // PHASE1 recap §8.6). MEDIA_SERVER_PORT=0 = ephemeral (OS-assigned) port.
+  // MONTAGE_MIN_MEDIA is the N floor of valid items required to generate.
+  // INFRA_REMOTION_DIR locates the render driver + bundled music manifest.
+  REMOTION_CONCURRENCY: z.coerce.number().int().min(1).default(1),
+  RENDER_TIMEOUT_MS: z.coerce.number().int().min(1).default(300000),
+  RENDER_GL: z.string().default("null"),
+  MEDIA_SERVER_PORT: z.coerce.number().int().min(0).max(65535).default(0),
+  MONTAGE_MIN_MEDIA: z.coerce.number().int().min(1).default(MONTAGE_MIN_MEDIA),
+  INFRA_REMOTION_DIR: z.string().default("infra/remotion"),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -37,10 +37,11 @@ export function TodayItemCard({ item }: { item: MediaItemDTO }) {
   const badge = BADGE[item.validationStatus];
   const duration = isVideo ? formatDuration(item.durationMs) : null;
   // PHOTO: show a real image once we have a signed URL (valid item). VIDEO: never feed
-  // the raw .mp4/.mov downloadUrl to <Image> (it can't decode it → blank tile); render
-  // an intentional dark play-tile instead, consistent with UploadCard/CaptureThumbStrip.
-  // (Real poster frames are a tracked server-side follow-up.)
+  // the raw .mp4/.mov downloadUrl to <Image> (it can't decode it → blank tile). Instead
+  // prefer the server-extracted poster frame (MediaItemDTO.thumbnailUrl, M7 §12) with a
+  // play badge; fall back to the intentional dark play-tile when no poster exists yet.
   const hasThumb = !isVideo && item.downloadUrl != null;
+  const videoPoster = isVideo ? item.thumbnailUrl : null;
 
   const onRemove = async () => {
     const ok = await confirm({
@@ -73,8 +74,16 @@ export function TodayItemCard({ item }: { item: MediaItemDTO }) {
         >
           {isVideo ? (
             <>
-              {/* VIDEO: intentional dark play-tile (no poster frame yet) — full-cover
-                  scrim + centered play glyph, matching UploadCard/CaptureThumbStrip. */}
+              {/* VIDEO: prefer the real server-extracted poster frame; otherwise a
+                  neutral dark tile. Either way overlay a play badge + duration. */}
+              {videoPoster ? (
+                <Image
+                  source={{ uri: videoPoster }}
+                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+                  resizeMode="cover"
+                  testID="today-item-poster"
+                />
+              ) : null}
               <View
                 style={{
                   position: 'absolute',

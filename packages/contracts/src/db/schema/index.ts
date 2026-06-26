@@ -6,3 +6,4 @@ export * from "./enums.ts";
 export * from "./auth.ts";
 export * from "./groups.ts";
 export * from "./media.ts";
+export * from "./montage.ts";

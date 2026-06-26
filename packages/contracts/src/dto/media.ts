@@ -63,6 +63,9 @@ export const mediaItemDtoSchema = z.object({
   // A short-TTL signed GET URL (host = public endpoint). Present for items that
   // have been uploaded; null for ones still in the `uploaded` (pre-PUT) state.
   downloadUrl: z.string().url().nullable(),
+  // A short-TTL signed GET URL for the video poster frame (M7 §12). Null for
+  // photos and for videos whose poster hasn't been extracted yet.
+  thumbnailUrl: z.string().url().nullable(),
   metadataSummary: z.record(z.string(), z.unknown()),
 });
 export type MediaItemDTO = z.infer<typeof mediaItemDtoSchema>;

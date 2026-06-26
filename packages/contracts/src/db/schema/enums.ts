@@ -83,3 +83,30 @@ export const processingStatus = pgEnum("processing_status", [
   "deleted",
   "failed",
 ]);
+
+// ── M7 montage ─────────────────────────────────────────────────────────────────
+/**
+ * Montage theme — drives per-theme pacing/transition/overlay in the EDL builder
+ * (M7 §2). The montage row stores `theme` as `text`; this pgEnum exists so
+ * drizzle-kit emits a documented `CREATE TYPE`. The matching z.enum lives in
+ * dto/montageEnums.ts (`themeEnum`) — the two value lists are hand-kept in sync.
+ */
+export const theme = pgEnum("theme", ["chill", "party", "clean", "travel", "random", "fast_cut", "soft"]);
+
+/**
+ * Montage lifecycle status machine (M7 §2/§4):
+ *   not_generated → generating → draft_ready → published
+ * side-branches → failed; deleted_by_user / removed_by_admin / expired reserved
+ * for M8/M9. Backs `montage.status`. Matching z.enum in dto/montageEnums.ts
+ * (`montageStatusEnum`) — keep in sync.
+ */
+export const montageStatus = pgEnum("montage_status", [
+  "not_generated",
+  "generating",
+  "draft_ready",
+  "published",
+  "failed",
+  "deleted_by_user",
+  "removed_by_admin",
+  "expired",
+]);

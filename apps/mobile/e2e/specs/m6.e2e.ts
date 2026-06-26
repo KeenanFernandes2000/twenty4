@@ -492,10 +492,11 @@ test('flow 6 — fresh-EXIF import validates → readiness flips not-ready → r
     console.log(`[m6][flow6] fresh-EXIF API statuses=[${statuses}] validCount=${validCount}`);
 
     if (validCount >= 1) {
-      // Readiness flips to ready and the disabled generate-button appears.
+      // Readiness flips to ready and the generate-button appears ENABLED (M7 wired
+      // the real montage generate action; it was a disabled placeholder in M6).
       await expect(tid(p, 'readiness-state')).toHaveText('ready', { timeout: 30_000 });
       await expect(tid(p, 'generate-button')).toBeVisible({ timeout: 30_000 });
-      await expect(tid(p, 'generate-button')).toBeDisabled();
+      await expect(tid(p, 'generate-button')).toBeEnabled();
       await shot(p, 'm6-flow6-readiness-ready');
       // eslint-disable-next-line no-console
       console.log('[m6][flow6] readiness flipped not-ready → ready ✓');

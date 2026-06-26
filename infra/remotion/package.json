@@ -1,0 +1,25 @@
+{
+  "name": "@twenty4/remotion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-contained Remotion <Montage/> composition + render driver for the M7 montage pipeline. Receives plain JSON (EDL + srcMap) at runtime; does NOT import @twenty4/contracts.",
+  "scripts": {
+    "gen:music": "node scripts/gen-music.mjs",
+    "gen:beatgrids": "node scripts/precompute-beatgrids.mjs",
+    "gen:all": "node scripts/gen-music.mjs && node scripts/precompute-beatgrids.mjs",
+    "render": "node render.mjs",
+    "studio": "remotion studio src/index.ts"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.483",
+    "@remotion/renderer": "4.0.483",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "remotion": "4.0.483"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3"
+  }
+}

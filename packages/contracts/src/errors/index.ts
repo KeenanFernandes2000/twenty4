@@ -36,6 +36,14 @@ export const ERROR_CODES = [
   "MEDIA_TYPE_NOT_ALLOWED", // 415 — content-type not in the MIME allowlist
   "DAILY_LIMIT_REACHED", // 429 — caller already at the per-day item cap
   "MEDIA_VALIDATION_FAILED", // 422 — /complete HeadObject gate rejected the upload
+  // ── Montage (M7) ───────────────────────────────────────────────────────────
+  "RENDER_FAILED_RETRYABLE", // 500 — render failed after the auto-retry; user may retry
+  "MONTAGE_ALREADY_GENERATING", // 409 — a render is already in flight for today
+  "NOT_ENOUGH_MEDIA", // 422 — fewer than MONTAGE_MIN_MEDIA valid items to render
+  "MONTAGE_NOT_OWNED", // 403 — caller is not the montage's owner (GET/publish)
+  "GROUP_NOT_MEMBER", // 403 — publish target group has no active membership for caller
+  "RECAP_ALREADY_TODAY", // 409 — a recap is already published into this group today
+  "MONTAGE_NOT_FOUND", // 404 — no montage for the id
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -70,6 +78,14 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   MEDIA_TYPE_NOT_ALLOWED: 415,
   DAILY_LIMIT_REACHED: 429,
   MEDIA_VALIDATION_FAILED: 422,
+  // ── Montage (M7) ───────────────────────────────────────────────────────────
+  RENDER_FAILED_RETRYABLE: 500,
+  MONTAGE_ALREADY_GENERATING: 409,
+  NOT_ENOUGH_MEDIA: 422,
+  MONTAGE_NOT_OWNED: 403,
+  GROUP_NOT_MEMBER: 403,
+  RECAP_ALREADY_TODAY: 409,
+  MONTAGE_NOT_FOUND: 404,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -276,6 +292,58 @@ export class MediaValidationFailedError extends AppError {
   constructor(message = "Media validation failed") {
     super("MEDIA_VALIDATION_FAILED", message);
     this.name = "MediaValidationFailedError";
+  }
+}
+
+// ── Montage (M7) ──────────────────────────────────────────────────────────────
+export class RenderFailedRetryableError extends AppError {
+  constructor(message = "Render failed; please try again") {
+    super("RENDER_FAILED_RETRYABLE", message);
+    this.name = "RenderFailedRetryableError";
+  }
+}
+
+export class MontageAlreadyGeneratingError extends AppError {
+  constructor(message = "A montage is already generating for today") {
+    super("MONTAGE_ALREADY_GENERATING", message);
+    this.name = "MontageAlreadyGeneratingError";
+  }
+}
+
+export class NotEnoughMediaError extends AppError {
+  constructor(message = "Not enough valid media to generate a montage") {
+    super("NOT_ENOUGH_MEDIA", message);
+    this.name = "NotEnoughMediaError";
+  }
+}
+
+export class MontageNotOwnedError extends AppError {
+  constructor(message = "You do not own this montage") {
+    super("MONTAGE_NOT_OWNED", message);
+    this.name = "MontageNotOwnedError";
+  }
+}
+
+// The montage-publish analog of NOT_A_MEMBER (M7 §7) — caller has no active
+// membership in a group they tried to publish into.
+export class GroupNotMemberError extends AppError {
+  constructor(message = "You are not a member of this group") {
+    super("GROUP_NOT_MEMBER", message);
+    this.name = "GroupNotMemberError";
+  }
+}
+
+export class RecapAlreadyTodayError extends AppError {
+  constructor(message = "A recap has already been published to this group today") {
+    super("RECAP_ALREADY_TODAY", message);
+    this.name = "RecapAlreadyTodayError";
+  }
+}
+
+export class MontageNotFoundError extends AppError {
+  constructor(message = "Montage not found") {
+    super("MONTAGE_NOT_FOUND", message);
+    this.name = "MontageNotFoundError";
   }
 }
 

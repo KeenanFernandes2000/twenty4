@@ -27,6 +27,8 @@ export interface S3Deps {
   signer: S3Client; // signs presigned URLs (public endpoint host)
   internal: S3Client; // server-side ops (internal endpoint host)
   rawBucket: string;
+  montagesBucket: string; // rendered montage mp4s (M7)
+  thumbnailsBucket: string; // video poster frames + montage thumbnails (M7)
   uploadTtlSec: number;
   downloadTtlSec: number;
 }
@@ -51,6 +53,8 @@ export function createS3(env: Env): S3Deps {
     signer,
     internal,
     rawBucket: env.S3_BUCKET_RAW,
+    montagesBucket: env.S3_BUCKET_MONTAGES,
+    thumbnailsBucket: env.S3_BUCKET_THUMBNAILS,
     uploadTtlSec: env.MEDIA_UPLOAD_URL_TTL_SEC,
     downloadTtlSec: env.MEDIA_DOWNLOAD_URL_TTL_SEC,
   };
@@ -59,6 +63,16 @@ export function createS3(env: Env): S3Deps {
 // Object key for a media item: media/<userId>/<itemId>.
 export function rawKey(userId: string, itemId: string): string {
   return `media/${userId}/${itemId}`;
+}
+
+// Object key for a media item's video poster frame: thumbnails/<userId>/<itemId>.
+export function thumbnailKey(userId: string, itemId: string): string {
+  return `thumbnails/${userId}/${itemId}`;
+}
+
+// Object key for a rendered montage mp4: montages/<userId>/<montageId>.
+export function montageKey(userId: string, montageId: string): string {
+  return `montages/${userId}/${montageId}`;
 }
 
 // Presigned PUT to raw/<key> — host = public endpoint. The client uploads bytes
@@ -72,6 +86,31 @@ export async function presignPut(s3: S3Deps, key: string, contentType: string): 
 export async function presignGet(s3: S3Deps, key: string): Promise<string> {
   const cmd = new GetObjectCommand({ Bucket: s3.rawBucket, Key: key });
   return getSignedUrl(s3.signer, cmd, { expiresIn: s3.downloadTtlSec });
+}
+
+// Presigned GET to thumbnails/<key> — host = public endpoint. Used for the video
+// poster frame (MediaItemDTO.thumbnailUrl) and the montage thumbnail (M7). The
+// montage caller caps `expiresIn` to the recap's remaining lifetime (a published
+// recap's thumbnail must not outlive its expiry_at); media callers use the default.
+export async function presignThumbGet(
+  s3: S3Deps,
+  key: string,
+  expiresIn: number = s3.downloadTtlSec,
+): Promise<string> {
+  const cmd = new GetObjectCommand({ Bucket: s3.thumbnailsBucket, Key: key });
+  return getSignedUrl(s3.signer, cmd, { expiresIn });
+}
+
+// Presigned GET to montages/<key> — host = public endpoint. The rendered montage
+// mp4 preview (MontageDTO.previewUrl). `expiresIn` is capped by the caller to the
+// montage's remaining lifetime (a published recap must not outlive its expiry_at).
+export async function presignMontageGet(
+  s3: S3Deps,
+  key: string,
+  expiresIn: number = s3.downloadTtlSec,
+): Promise<string> {
+  const cmd = new GetObjectCommand({ Bucket: s3.montagesBucket, Key: key });
+  return getSignedUrl(s3.signer, cmd, { expiresIn });
 }
 
 // HeadObject via the INTERNAL endpoint — actual ContentLength/ContentType/ETag.

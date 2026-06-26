@@ -1,0 +1,34 @@
+[
+  {
+    "id": "chill",
+    "title": "Chill Haze",
+    "durationMs": 30000,
+    "bpm": 90,
+    "file": "music/chill.wav",
+    "beatgridFile": "src/music/chill.beatgrid.json"
+  },
+  {
+    "id": "party",
+    "title": "Party Pulse",
+    "durationMs": 30000,
+    "bpm": 128,
+    "file": "music/party.wav",
+    "beatgridFile": "src/music/party.beatgrid.json"
+  },
+  {
+    "id": "clean",
+    "title": "Clean Lines",
+    "durationMs": 30000,
+    "bpm": 100,
+    "file": "music/clean.wav",
+    "beatgridFile": "src/music/clean.beatgrid.json"
+  },
+  {
+    "id": "fast",
+    "title": "Fast Rush",
+    "durationMs": 30000,
+    "bpm": 140,
+    "file": "music/fast.wav",
+    "beatgridFile": "src/music/fast.beatgrid.json"
+  }
+]

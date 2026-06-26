@@ -1,18 +1,30 @@
-// ReadinessBanner — the soft hint that will gate M7's "Generate" CTA. Takes the
+// ReadinessBanner — the soft hint that gates M7's "Generate" CTA. Takes the
 // readiness() summary over today's items and renders an Ember Card banner:
-//   • ready  → success copy "You've got enough to generate your montage" + a DISABLED
-//              "Generate (soon)" placeholder (M7 owns the real action).
+//   • ready  → success copy "You've got enough to generate your montage" + an
+//              ENABLED "Generate" button (M7) wired to the montage generate flow.
 //   • !ready → muted hint to add a photo/video (+ pending/checking count if any).
 // A stable testID="readiness-state" text node reflects ready/not-ready so the e2e
-// can assert the flip.
+// can assert the flip. `onGenerate` is supplied by the Today screen (kicks off
+// montageStore.startGenerate → navigates to the generating screen).
 //
 // Web-safe: no expo-camera / expo-image-picker imports.
 import { View } from 'react-native';
+import { MONTAGE_MIN_MEDIA } from '@twenty4/contracts';
 import { Button, Card, Text } from '@/ui';
 import { useTheme } from '@/theme';
 import type { TodayReadiness } from '@/lib/media';
 
-export function ReadinessBanner({ readiness }: { readiness: TodayReadiness }) {
+export function ReadinessBanner({
+  readiness,
+  onGenerate,
+  generating = false,
+}: {
+  readiness: TodayReadiness;
+  /** Kick off the montage generate flow (Today screen → montageStore.startGenerate). */
+  onGenerate?: () => void;
+  /** The POST /montages is in flight. */
+  generating?: boolean;
+}) {
   const theme = useTheme();
   const { ready, pendingCount } = readiness;
 
@@ -30,19 +42,21 @@ export function ReadinessBanner({ readiness }: { readiness: TodayReadiness }) {
         {ready ? (
           <>
             <Text variant="body" color="success">
-              You’ve got enough to generate your montage
+              You’ve got enough — make your recap
             </Text>
             <Button
               variant="primary"
               fullWidth
-              title="Generate (soon)"
-              disabled
+              title="Generate"
+              onPress={onGenerate}
+              disabled={!onGenerate || generating}
+              loading={generating}
               testID="generate-button"
             />
           </>
         ) : (
           <Text variant="body" color="muted">
-            Add at least one photo or video to generate
+            Add at least {MONTAGE_MIN_MEDIA} clips to make today’s recap
             {pendingCount > 0 ? ` · ${pendingCount} checking…` : ''}
           </Text>
         )}

@@ -108,6 +108,15 @@ async function getApi() {
   return mod.api;
 }
 
+// Lazy montage-store clear: montageStore imports `api` and api.ts imports THIS
+// store, so a top-level import here would form a cycle (authStore → montageStore →
+// api → authStore). Deferred to call time (mirrors getApi). Drops any in-flight
+// montage (current/error) so it never leaks across an account switch / logout.
+async function clearMontageStore() {
+  const { useMontageStore } = await import('@/stores/montageStore');
+  useMontageStore.getState().clear();
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,
   user: null,
@@ -154,6 +163,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // (not userId-scoped) today; clearing the cache is the surgical fix.
     // (Future hardening: scope query keys by userId to avoid the blanket clear.)
     queryClient.clear();
+    // Drop any in-flight montage too — it's not in the query cache (zustand).
+    await clearMontageStore();
     await setToken(token);
     set({ token });
     await get().refreshMe();
@@ -201,6 +212,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // logging out of A and into B briefly serves A's cached groups/me (the query
     // keys are static, not userId-scoped), until a manual refetch.
     queryClient.clear();
+    // Same for the montage store (zustand, not in the query cache).
+    await clearMontageStore();
     set({ token: null, user: null, status: 'unauthenticated' });
   },
 }));
