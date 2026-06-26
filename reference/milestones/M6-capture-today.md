@@ -121,3 +121,12 @@ None new — M6 is a **client** of M4's media endpoints:
 - **Video length/size client-side pre-check** — default: rely on M4's server-side `HeadObject` enforcement (≤60s, ≤200MB, MIME allowlist); add a client-side warning as a nicety, not a gate.
 - **Captured-media local cleanup** — default: leave camera-captured temp files to OS/cache; explicit cleanup deferred.
 - **Native background-upload branch** — present but **not exercised in M6**; full validation (and dev-client wiring) is **M13**.
+
+## 12. Device-acceptance polish (post-build, on real Android)
+
+User on-device check passed the §8 gate (in-app capture + import both upload with progress and land in Today). Two findings fixed in a follow-up polish commit:
+
+- **Import freshness — use the file's REAL gallery date, not a faked "now".** The first cut sent `declaredOriginalTimestamp = now` for every import, so other-app media with **stripped EXIF** (WhatsApp/social/screenshots) validated as "today" even when old. Fixed: added `expo-media-library` and read the asset's real `creationTime` (`getAssetInfoAsync` — on the **`expo-media-library/legacy`** subpath in SDK 56, same as expo-file-system) → send as `deviceCapturedAt`; **dropped the `now` lie**. Native-only (Platform-guarded; web/`assetId`-null/permission-denied → send no timestamp → server relies on EXIF, rejecting truly-undated media — the safe direction). Net: today's media from any source validates; old media from any source is rejected. Camera captures unchanged (genuinely now).
+- **Video items showed a blank tile** — `TodayItemCard` fed the raw `.mp4` `downloadUrl` to `<Image>` (can't decode video). Fixed: video items render an intentional dark **play-tile + duration** (consistent with the upload cards / capture strip).
+
+**Deferred follow-up (real video poster frames):** there is still no actual frame for videos — the play-tile is a placeholder. A real poster needs **server-side frame extraction** in the validate-media worker → store in the already-provisioned-but-unused `thumbnails` S3 bucket → add a `thumbnailUrl` to `MediaItemDTO` (+ a column/migration) → client prefers it. ~1–2 days across worker + contracts + migration + API + client; it's a small **M4/worker enhancement**, distinct from the M7 Remotion montage. Schedule as its own item.

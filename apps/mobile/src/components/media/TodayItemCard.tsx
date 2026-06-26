@@ -36,8 +36,11 @@ export function TodayItemCard({ item }: { item: MediaItemDTO }) {
   const isVideo = item.mediaType === 'video';
   const badge = BADGE[item.validationStatus];
   const duration = isVideo ? formatDuration(item.durationMs) : null;
-  // Only show a real image once we actually have a signed URL (valid item).
-  const hasThumb = item.downloadUrl != null;
+  // PHOTO: show a real image once we have a signed URL (valid item). VIDEO: never feed
+  // the raw .mp4/.mov downloadUrl to <Image> (it can't decode it → blank tile); render
+  // an intentional dark play-tile instead, consistent with UploadCard/CaptureThumbStrip.
+  // (Real poster frames are a tracked server-side follow-up.)
+  const hasThumb = !isVideo && item.downloadUrl != null;
 
   const onRemove = async () => {
     const ok = await confirm({
@@ -68,7 +71,41 @@ export function TodayItemCard({ item }: { item: MediaItemDTO }) {
             justifyContent: 'center',
           }}
         >
-          {hasThumb ? (
+          {isVideo ? (
+            <>
+              {/* VIDEO: intentional dark play-tile (no poster frame yet) — full-cover
+                  scrim + centered play glyph, matching UploadCard/CaptureThumbStrip. */}
+              <View
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: theme.colors.scrim,
+                }}
+              >
+                <Text variant="display" color="onAccent">
+                  {'▶'}
+                </Text>
+              </View>
+              {/* Duration badge (relocated here off the centered glyph). */}
+              <View
+                style={{
+                  position: 'absolute',
+                  top: theme.spacing.xs,
+                  right: theme.spacing.xs,
+                  paddingHorizontal: theme.spacing.sm,
+                  paddingVertical: theme.spacing.xxs,
+                  borderRadius: theme.radii.sm,
+                  backgroundColor: theme.colors.scrim,
+                }}
+              >
+                <Text variant="micro" color="onAccent">
+                  {duration ?? 'Video'}
+                </Text>
+              </View>
+            </>
+          ) : hasThumb ? (
             <Image
               source={{ uri: item.downloadUrl as string }}
               style={{ width: '100%', height: '100%' }}
@@ -79,27 +116,6 @@ export function TodayItemCard({ item }: { item: MediaItemDTO }) {
               {item.validationStatus === 'invalid' ? 'Unavailable' : 'Processing…'}
             </Text>
           )}
-
-          {isVideo ? (
-            <View
-              style={{
-                position: 'absolute',
-                top: theme.spacing.xs,
-                right: theme.spacing.xs,
-                paddingHorizontal: theme.spacing.sm,
-                paddingVertical: theme.spacing.xxs,
-                borderRadius: theme.radii.sm,
-                backgroundColor: theme.colors.scrim,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: theme.spacing.xxs,
-              }}
-            >
-              <Text variant="micro" color="onAccent">
-                {'▶'} {duration ?? 'Video'}
-              </Text>
-            </View>
-          ) : null}
         </View>
 
         {/* Status badge + remove */}

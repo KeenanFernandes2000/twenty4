@@ -58,6 +58,13 @@
           "photosPermission": "twenty4 accesses your photos so you can import them into your group's daily montage.",
           "cameraPermission": "twenty4 uses your camera to capture photos and videos for your group's daily montage."
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "twenty4 reads your photo library to confirm imported media was created today.",
+          "granularPermissions": ["photo", "video"]
+        }
       ]
     ],
     "experiments": {
