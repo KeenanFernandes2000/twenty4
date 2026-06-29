@@ -17,9 +17,12 @@
 
 import { z } from "zod";
 import {
+  addCommentResSchema,
+  commentsPageSchema,
   createMontageResSchema,
   downloadUrlResSchema,
   errorEnvelopeSchema,
+  feedPageSchema,
   groupDtoSchema,
   inviteDtoSchema,
   invitePreviewDtoSchema,
@@ -31,14 +34,17 @@ import {
   montageDtoSchema,
   montageOptionsResSchema,
   publishMontageResSchema,
+  reactionSummarySchema,
   sessionDtoSchema,
   userDtoSchema,
 } from "@twenty4/contracts";
 import type {
+  AddCommentRes,
   AuthRefreshReq,
   AuthStartReq,
   AuthVerifyReq,
   Channel,
+  CommentsPage,
   CreateGroupReq,
   CreateMontageReq,
   CreateMontageRes,
@@ -46,6 +52,7 @@ import type {
   DownloadUrlRes,
   ErrorCode,
   ErrorEnvelope,
+  FeedPage,
   GroupDTO,
   InviteDTO,
   InvitePreviewDTO,
@@ -60,6 +67,8 @@ import type {
   PatchGroupReq,
   PublishMontageReq,
   PublishMontageRes,
+  ReactionSummary,
+  ReactionType,
   RegenerateMontageReq,
   SessionDTO,
   UpdateMeReq,
@@ -382,6 +391,50 @@ export function createApiClient(opts: ApiClientOptions = {}) {
         body,
         auth: true,
         schema: publishMontageResSchema,
+      });
+    },
+
+    // ── Feed + social (M8) ────────────────────────────────────────────────────
+    // Keyset-paginated feed of visible, unexpired, block-clean recaps; react/comment
+    // round-trips with live counts. `getFeed` walks pages via `nextCursor`; an
+    // optional `group` scopes to one group the caller belongs to.
+    getFeed(opts: { group?: string; cursor?: string } = {}): Promise<FeedPage> {
+      return request<FeedPage>("GET", "/feed", {
+        auth: true,
+        query: { group: opts.group, cursor: opts.cursor },
+        schema: feedPageSchema,
+      });
+    },
+    setReaction(montageId: string, type: ReactionType): Promise<ReactionSummary> {
+      return request<ReactionSummary>("POST", `/montages/${encodeURIComponent(montageId)}/reactions`, {
+        body: { type },
+        auth: true,
+        schema: reactionSummarySchema,
+      });
+    },
+    clearReaction(montageId: string): Promise<ReactionSummary> {
+      return request<ReactionSummary>("DELETE", `/montages/${encodeURIComponent(montageId)}/reactions`, {
+        auth: true,
+        schema: reactionSummarySchema,
+      });
+    },
+    getComments(montageId: string, cursor?: string): Promise<CommentsPage> {
+      return request<CommentsPage>("GET", `/montages/${encodeURIComponent(montageId)}/comments`, {
+        auth: true,
+        query: { cursor },
+        schema: commentsPageSchema,
+      });
+    },
+    addComment(montageId: string, text: string): Promise<AddCommentRes> {
+      return request<AddCommentRes>("POST", `/montages/${encodeURIComponent(montageId)}/comments`, {
+        body: { text },
+        auth: true,
+        schema: addCommentResSchema,
+      });
+    },
+    deleteComment(commentId: string): Promise<{ commentCount: number }>{
+      return request<{ commentCount: number }>("DELETE", `/comments/${encodeURIComponent(commentId)}`, {
+        auth: true,
       });
     },
   };

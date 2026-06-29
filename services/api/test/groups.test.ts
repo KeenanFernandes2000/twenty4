@@ -36,11 +36,15 @@ let joiner: { token: string; userId: string };
 let stranger: { token: string; userId: string };
 
 beforeAll(async () => {
+  // Build env FIRST — makeGroupEnv() runs loadEnvForTest() which populates
+  // process.env.DATABASE_URL; makeGroupDb() reads it, so env must load before the
+  // DB client is created (else postgres.js falls back to the OS user → auth fail).
+  const env = makeGroupEnv();
   db = makeGroupDb();
   redis = makeGroupRedis();
   await flushInviteKeys(redis);
   await cleanupGroupsByPhones(db, ALL_PHONES);
-  app = await buildGroupApp({ db, redis, env: makeGroupEnv() });
+  app = await buildGroupApp({ db, redis, env });
   const seeded = await seedUsers(app, [OWNER, JOINER, STRANGER]);
   [owner, joiner, stranger] = seeded;
 });

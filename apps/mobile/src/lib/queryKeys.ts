@@ -28,4 +28,12 @@ export const queryKeys = {
     detail: (id: string) => ['montage', id] as const,
     options: ['montage', 'options'] as const,
   },
+  feed: {
+    // The block-filtered feed (M8). The optional group scopes to one group; we key
+    // on `group ?? null` so the "All" feed and each per-group feed are distinct
+    // infinite caches. The shared `['feed','list']` prefix lets the social
+    // mutations patch every group variant a card appears in at once.
+    list: (group?: string) => ['feed', 'list', group ?? null] as const,
+    comments: (montageId: string) => ['feed', 'comments', montageId] as const,
+  },
 } as const;

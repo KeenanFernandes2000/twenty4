@@ -13,6 +13,7 @@ import { registerAuth } from "./auth/index.ts";
 import { registerGroups } from "./groups/index.ts";
 import { registerMedia } from "./media/index.ts";
 import { registerMontage } from "./montage/index.ts";
+import { registerFeed } from "./feed/index.ts";
 import type { DbClient } from "./db.ts";
 import type { RedisClient } from "./redis.ts";
 
@@ -210,6 +211,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // ── M7 montage subsystem (/montages) — reuses the BA auth instance + S3 + the
     // render-montage queue. Registered only alongside auth.
     await registerMontage(app, { db, env: opts.env, auth, queue: opts.montageQueue });
+    // ── M8 feed + social subsystem (/feed + /montages/:id/reactions + comments) —
+    // reuses the BA auth instance + S3 + Redis (social rate limiter). Registered only
+    // alongside auth (needs auth + redis + env).
+    await registerFeed(app, { db, env: opts.env, auth, redis: opts.redis });
   }
 
   return app;

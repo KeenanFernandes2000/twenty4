@@ -44,6 +44,8 @@ export const ERROR_CODES = [
   "GROUP_NOT_MEMBER", // 403 — publish target group has no active membership for caller
   "RECAP_ALREADY_TODAY", // 409 — a recap is already published into this group today
   "MONTAGE_NOT_FOUND", // 404 — no montage for the id
+  // ── Feed + social (M8) ─────────────────────────────────────────────────────
+  "COMMENT_NOT_FOUND", // 404 — no comment for the id
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -86,6 +88,8 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   GROUP_NOT_MEMBER: 403,
   RECAP_ALREADY_TODAY: 409,
   MONTAGE_NOT_FOUND: 404,
+  // ── Feed + social (M8) ─────────────────────────────────────────────────────
+  COMMENT_NOT_FOUND: 404,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -344,6 +348,14 @@ export class MontageNotFoundError extends AppError {
   constructor(message = "Montage not found") {
     super("MONTAGE_NOT_FOUND", message);
     this.name = "MontageNotFoundError";
+  }
+}
+
+// ── Feed + social (M8) ────────────────────────────────────────────────────────
+export class CommentNotFoundError extends AppError {
+  constructor(message = "Comment not found") {
+    super("COMMENT_NOT_FOUND", message);
+    this.name = "CommentNotFoundError";
   }
 }
 

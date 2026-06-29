@@ -10,5 +10,7 @@ export * from "./dto/groups.ts";
 export * from "./dto/media.ts";
 export * from "./dto/montage.ts";
 export * from "./dto/edl.ts";
+export * from "./dto/social.ts";
+export * from "./dto/feed.ts";
 export * from "./dayWindow/index.ts";
 export * from "./mediaSniff/index.ts";

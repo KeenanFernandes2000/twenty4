@@ -5,5 +5,7 @@
 export * from "./enums.ts";
 export * from "./auth.ts";
 export * from "./groups.ts";
+export * from "./block.ts";
 export * from "./media.ts";
 export * from "./montage.ts";
+export * from "./social.ts";

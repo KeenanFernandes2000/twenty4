@@ -110,3 +110,18 @@ export const montageStatus = pgEnum("montage_status", [
   "removed_by_admin",
   "expired",
 ]);
+
+// ── M8 social ──────────────────────────────────────────────────────────────────
+/**
+ * Reaction kind — the one replaceable reaction a user sets on a montage (M8 §4).
+ * Backs `reaction.type`. Matching z.enum in dto/social.ts (`reactionTypeEnum`) —
+ * keep both value lists in sync.
+ */
+export const reactionType = pgEnum("reaction_type", ["like", "laugh", "fire", "heart", "shocked"]);
+
+/**
+ * Comment lifecycle. M8 soft-deletes (status=deleted) so counts/preview update
+ * instantly and the row survives for M9's atomic cascade/audit at expiry. Backs
+ * `comment.status`. Matching z.enum in dto/social.ts (`commentStatusEnum`) — sync.
+ */
+export const commentStatus = pgEnum("comment_status", ["active", "deleted"]);

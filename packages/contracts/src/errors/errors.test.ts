@@ -61,6 +61,7 @@ test("ERROR_STATUS is the canonical map", () => {
     GROUP_NOT_MEMBER: 403,
     RECAP_ALREADY_TODAY: 409,
     MONTAGE_NOT_FOUND: 404,
+    COMMENT_NOT_FOUND: 404,
   });
 });
 

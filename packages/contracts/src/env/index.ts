@@ -3,6 +3,7 @@
 // Services call parseEnv() and fail fast on a non-conforming environment.
 import { z } from "zod";
 import { MONTAGE_MIN_MEDIA } from "../dto/montage.ts";
+import { COMMENT_MAX_LENGTH } from "../dto/social.ts";
 
 // Coerce a string env var into an int port, with sane bounds.
 const port = z.coerce.number().int().min(1).max(65535);
@@ -96,6 +97,17 @@ export const envSchema = z.object({
   MEDIA_SERVER_PORT: z.coerce.number().int().min(0).max(65535).default(0),
   MONTAGE_MIN_MEDIA: z.coerce.number().int().min(1).default(MONTAGE_MIN_MEDIA),
   INFRA_REMOTION_DIR: z.string().default("infra/remotion"),
+
+  // ── Feed + social throttle/limits (M8) ──────────────────────────────────────
+  // Per-(user) fixed-window caps on comment-create + reaction-set, env-configurable
+  // so CI can set low caps for deterministic 429 tests (the §5 OTP-cap learning).
+  // COMMENT_MAX_LENGTH defaults to the dto constant; CI can set a low cap to drive
+  // the over-length reject path. Optional-with-defaults so M1 fail-fast still passes.
+  COMMENT_CREATE_CAP: z.coerce.number().int().min(1).default(10),
+  COMMENT_WINDOW_SEC: z.coerce.number().int().min(1).default(60),
+  COMMENT_MAX_LENGTH: z.coerce.number().int().min(1).default(COMMENT_MAX_LENGTH),
+  REACTION_SET_CAP: z.coerce.number().int().min(1).default(30),
+  REACTION_WINDOW_SEC: z.coerce.number().int().min(1).default(60),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -293,6 +293,93 @@ describe("media endpoints", () => {
   });
 });
 
+describe("feed + social endpoints", () => {
+  it("getFeed GETs /feed with auth + group/cursor query and parses FeedPage", async () => {
+    const stub = stubFetch(makeResponse(200, validFeedPage()));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const page = await client.getFeed({ group: GROUP_ID, cursor: "c1" });
+    expect(stub.calls[0]!.url).toBe(`${BASE}/feed?group=${GROUP_ID}&cursor=c1`);
+    expect(stub.calls[0]!.init.method).toBe("GET");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(page.items[0]!.montageId).toBe(MONTAGE_ID);
+    expect(page.nextCursor).toBe("next");
+  });
+
+  it("getFeed with no opts GETs bare /feed", async () => {
+    const stub = stubFetch(makeResponse(200, { items: [], nextCursor: null }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    await client.getFeed();
+    expect(stub.calls[0]!.url).toBe(`${BASE}/feed`);
+  });
+
+  it("setReaction POSTs /montages/:id/reactions with {type} and parses ReactionSummary", async () => {
+    const stub = stubFetch(makeResponse(200, { count: 1, viewerReaction: "fire" }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.setReaction(MONTAGE_ID, "fire");
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/reactions`);
+    expect(stub.calls[0]!.init.method).toBe("POST");
+    expect(stub.calls[0]!.init.body).toBe(JSON.stringify({ type: "fire" }));
+    expect(res.count).toBe(1);
+    expect(res.viewerReaction).toBe("fire");
+  });
+
+  it("clearReaction DELETEs /montages/:id/reactions and parses ReactionSummary", async () => {
+    const stub = stubFetch(makeResponse(200, { count: 0, viewerReaction: null }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.clearReaction(MONTAGE_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/reactions`);
+    expect(stub.calls[0]!.init.method).toBe("DELETE");
+    expect(res.count).toBe(0);
+    expect(res.viewerReaction).toBeNull();
+  });
+
+  it("getComments GETs /montages/:id/comments with cursor and parses CommentsPage", async () => {
+    const stub = stubFetch(makeResponse(200, { items: [validCommentDto()], nextCursor: null }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getComments(MONTAGE_ID, "cur");
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/comments?cursor=cur`);
+    expect(stub.calls[0]!.init.method).toBe("GET");
+    expect(res.items[0]!.id).toBe(COMMENT_ID);
+  });
+
+  it("addComment POSTs /montages/:id/comments with {text} and parses AddCommentRes", async () => {
+    const stub = stubFetch(makeResponse(201, { comment: validCommentDto(), commentCount: 1 }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.addComment(MONTAGE_ID, "hello");
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/comments`);
+    expect(stub.calls[0]!.init.method).toBe("POST");
+    expect(stub.calls[0]!.init.body).toBe(JSON.stringify({ text: "hello" }));
+    expect(res.comment.id).toBe(COMMENT_ID);
+    expect(res.commentCount).toBe(1);
+  });
+
+  it("deleteComment DELETEs /comments/:id and returns {commentCount}", async () => {
+    const stub = stubFetch(makeResponse(200, { commentCount: 0 }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.deleteComment(COMMENT_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/comments/${COMMENT_ID}`);
+    expect(stub.calls[0]!.init.method).toBe("DELETE");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.commentCount).toBe(0);
+  });
+
+  it("trips the drift-guard when a feed card is malformed", async () => {
+    const bad = validFeedPage() as { items: Array<Record<string, unknown>> };
+    delete bad.items[0]!.reactionCount; // required by feedCardSchema
+    stubFetch(makeResponse(200, bad));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    let thrown: unknown;
+    try {
+      await client.getFeed();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(ApiError);
+    expect((thrown as Error).message).toContain("failed validation");
+  });
+});
+
 describe("missing baseUrl guard", () => {
   it("does NOT throw at construction, but rejects at request time with a clear ApiError", async () => {
     const prev = process.env.EXPO_PUBLIC_API_URL;
@@ -329,6 +416,42 @@ describe("missing baseUrl guard", () => {
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const GROUP_ID = "22222222-2222-4222-8222-222222222222";
 const MEDIA_ID = "33333333-3333-4333-8333-333333333333";
+const MONTAGE_ID = "44444444-4444-4444-8444-444444444444";
+const COMMENT_ID = "55555555-5555-4555-8555-555555555555";
+
+function validCommentDto() {
+  return {
+    id: COMMENT_ID,
+    montageId: MONTAGE_ID,
+    author: { id: USER_ID, displayName: "Ada", avatarUrl: null },
+    text: "hello",
+    createdAt: "2026-06-26T00:00:00.000Z",
+    canDelete: true,
+  };
+}
+
+function validFeedPage() {
+  return {
+    items: [
+      {
+        montageId: MONTAGE_ID,
+        author: { id: USER_ID, displayName: "Ada", avatarUrl: "https://cdn.local/a.jpg" },
+        dayBucket: "2026-06-26",
+        expiryAt: "2026-06-27T00:00:00.000Z",
+        durationMs: 30000,
+        videoUrl: "https://cdn.local/v.mp4?sig=abc",
+        thumbnailUrl: "https://cdn.local/t.jpg?sig=abc",
+        reactionCount: 0,
+        viewerReaction: null,
+        commentCount: 0,
+        commentPreview: [],
+        canDelete: false,
+        canReport: true,
+      },
+    ],
+    nextCursor: "next",
+  };
+}
 
 function validUser() {
   return {
