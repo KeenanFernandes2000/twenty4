@@ -91,7 +91,7 @@ Anything still needing a call (with the current default).
 | M5 | `M5-mobile-shell.md` | Expo Go app on Android: routing, API client, auth + group screens | ✅ done (`166315f`) — e2e-verified, device check pending |
 | M6 | `M6-capture-today.md` | Camera + gallery import, today bucket, upload-progress UI | ✅ done (`f3e28ae`) — web-e2e-verified, device check pending |
 | M7 | `M7-montage.md` | Remotion render pipeline (BullMQ) → generate → review → publish | ✅ done (`c435219`) — device-accepted; viewing/feed = M8 |
-| M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments | ✅ done — device-accepted; 🧪 thin core loop complete |
+| M8 | `M8-feed-social.md` | Block-filtered feed, reactions, comments | ✅ done (`6645277`) — device-accepted; 🧪 thin core loop complete |
 | M9 | `M9-ephemerality.md` | 24h hard-delete contract: expire/cleanup jobs, replace flow | ⬜ |
 | M9.5 | `M9.5-moments-experimental.md` | **(experimental, post-MVP)** opt-in BeReal-style synced daily prompts that feed the montage — built to evaluate, removable | ⬜ |
 
