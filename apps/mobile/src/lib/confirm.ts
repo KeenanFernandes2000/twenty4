@@ -1,10 +1,12 @@
-// confirm — a tiny cross-platform confirm() for destructive actions.
+// confirm — a themed, promise-based confirm() for destructive actions.
 //
-// On native we use RN's Alert.alert with a cancel + a (destructive) confirm button
-// and resolve a boolean. On web, react-native-web's Alert.alert does not render a
-// real dialog, so we fall back to the DOM `window.confirm`. Either way the caller
-// gets a `Promise<boolean>`.
-import { Alert, Platform } from 'react-native';
+// The call API is UNCHANGED: `confirm({ title, message, confirmLabel, destructive })`
+// returns `Promise<boolean>`. It no longer uses the native `Alert.alert` / DOM
+// `window.confirm` (those looked like default OS dialogs, off-theme). Instead it
+// drives a single themed `<ConfirmProvider>` mounted once at the authed-app root
+// (see components/ConfirmProvider). The provider REGISTERS its imperative
+// open-handler here on mount; `confirm()` delegates to it and the returned promise
+// resolves on the themed button taps. Works on web too (react-native-web Modal).
 
 export interface ConfirmOptions {
   title: string;
@@ -13,39 +15,39 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   /** Label for the cancel action. Default "Cancel". */
   cancelLabel?: string;
-  /** Style the confirm as destructive (native only). Default true. */
+  /** Style the confirm as destructive (red). Default true. */
   destructive?: boolean;
 }
 
-export function confirm({
-  title,
-  message,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
-  destructive = true,
-}: ConfirmOptions): Promise<boolean> {
-  if (Platform.OS === 'web') {
-    // window may be undefined during SSR/static export; guard it.
-    if (typeof globalThis !== 'undefined' && typeof (globalThis as { confirm?: unknown }).confirm === 'function') {
-      const text = message != null ? `${title}\n\n${message}` : title;
-      return Promise.resolve((globalThis as unknown as { confirm: (m: string) => boolean }).confirm(text));
-    }
-    return Promise.resolve(true);
-  }
+type ConfirmHandler = (opts: ConfirmOptions) => Promise<boolean>;
 
-  return new Promise<boolean>((resolve) => {
-    Alert.alert(
-      title,
-      message,
-      [
-        { text: cancelLabel, style: 'cancel', onPress: () => resolve(false) },
-        {
-          text: confirmLabel,
-          style: destructive ? 'destructive' : 'default',
-          onPress: () => resolve(true),
-        },
-      ],
-      { cancelable: true, onDismiss: () => resolve(false) },
-    );
-  });
+// The mounted provider's open-handler (null until <ConfirmProvider> mounts).
+let activeHandler: ConfirmHandler | null = null;
+
+/**
+ * Register the provider's imperative open-handler. Returns an unregister fn for the
+ * effect cleanup. Called once by <ConfirmProvider> on mount.
+ */
+export function registerConfirmHandler(handler: ConfirmHandler): () => void {
+  activeHandler = handler;
+  return () => {
+    if (activeHandler === handler) activeHandler = null;
+  };
+}
+
+/**
+ * Ask the user to confirm a (usually destructive) action. Resolves `true` when they
+ * confirm, `false` when they cancel/dismiss. Delegates to the mounted
+ * `<ConfirmProvider>`; if none is mounted (shouldn't happen inside the authed app)
+ * it safely resolves `false` so the destructive action is NOT taken.
+ */
+export function confirm(options: ConfirmOptions): Promise<boolean> {
+  if (!activeHandler) {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn('[confirm] No <ConfirmProvider> mounted; resolving false.');
+    }
+    return Promise.resolve(false);
+  }
+  return activeHandler(options);
 }

@@ -433,8 +433,6 @@ test('flow 4 — failed PUT shows Retry, then retry succeeds and lands in bucket
 // ── Flow 5: Remove a today item ──────────────────────────────────────────────
 test('flow 5 — remove a today item; disappears + gone from API', async () => {
   test.setTimeout(120_000);
-  // Auto-accept the window.confirm() the remove triggers on web.
-  page.on('dialog', (d) => void d.accept());
 
   // Ensure there's at least one today item (flow 1 left one; be defensive).
   await expect(tid(page, 'today-item').first()).toBeVisible({ timeout: 30_000 });
@@ -442,7 +440,9 @@ test('flow 5 — remove a today item; disappears + gone from API', async () => {
   expect(beforeItems.length).toBeGreaterThan(0);
   const beforeCount = await tid(page, 'today-item').count();
 
+  // Remove → confirm via the themed in-app dialog (no native window.confirm now).
   await tid(page, 'today-item-remove').first().click();
+  await tid(page, 'confirm-accept').click();
 
   // One fewer today-item card (optimistic remove + server reconcile).
   await expect

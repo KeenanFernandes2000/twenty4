@@ -12,6 +12,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  CannotReactToOwnError,
   CommentNotFoundError,
   ForbiddenError,
   NotAMemberError,
@@ -241,6 +242,7 @@ export async function registerFeedRoutes(app: FastifyInstance, deps: FeedRoutesD
         commentPreview,
         canDelete: m.userId === u.id,
         canReport: m.userId !== u.id,
+        canReact: m.userId !== u.id, // owner only SEES the counts; cannot react (M9)
       });
     }
 
@@ -260,7 +262,11 @@ export async function registerFeedRoutes(app: FastifyInstance, deps: FeedRoutesD
       const { id } = req.params as { id: string };
       const u = req.user!;
       const body = setReactionReqSchema.parse(req.body);
-      await requireCanView(db, u.id, id);
+      const m = await requireCanView(db, u.id, id);
+      // An owner only SEES their recap's reaction counts — they cannot react to it
+      // (M9 polish). Gated AFTER requireCanView (the owner can view their own, so no
+      // existence leak) and BEFORE the rate-limit (a guaranteed 403 burns no token).
+      if (m.userId === u.id) throw new CannotReactToOwnError();
       await rateLimiter.checkReaction(u.id);
 
       await db.db
@@ -284,7 +290,10 @@ export async function registerFeedRoutes(app: FastifyInstance, deps: FeedRoutesD
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { id } = req.params as { id: string };
       const u = req.user!;
-      await requireCanView(db, u.id, id);
+      const m = await requireCanView(db, u.id, id);
+      // Symmetric with POST: an owner has no reaction to clear (they can't set one) —
+      // 403 consistently rather than a silent no-op.
+      if (m.userId === u.id) throw new CannotReactToOwnError();
       await rateLimiter.checkReaction(u.id);
 
       await db.db.delete(reaction).where(and(eq(reaction.montageId, id), eq(reaction.userId, u.id)));

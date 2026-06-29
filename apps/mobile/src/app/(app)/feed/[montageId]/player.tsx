@@ -45,6 +45,9 @@ export default function PlayerScreen() {
     );
   }
 
+  // Owner = read-only (can't react to own recap). `undefined` → false (safe).
+  const canReact = (card as typeof card & { canReact?: boolean }).canReact ?? false;
+
   const onReact = (type: ReactionType) =>
     react.mutate({ montageId: card.montageId, type, current: card.viewerReaction });
 
@@ -85,12 +88,14 @@ export default function PlayerScreen() {
               </Text>
             ) : null}
           </View>
-          <ReactionBar
-            viewerReaction={card.viewerReaction}
-            onReact={onReact}
-            disabled={react.isPending}
-            testIDPrefix="player-react"
-          />
+          {canReact ? (
+            <ReactionBar
+              viewerReaction={card.viewerReaction}
+              onReact={onReact}
+              disabled={react.isPending}
+              testIDPrefix="player-react"
+            />
+          ) : null}
           <Button
             variant="secondary"
             fullWidth

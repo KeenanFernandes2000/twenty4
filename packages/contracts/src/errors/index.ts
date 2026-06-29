@@ -46,6 +46,7 @@ export const ERROR_CODES = [
   "MONTAGE_NOT_FOUND", // 404 — no montage for the id
   // ── Feed + social (M8) ─────────────────────────────────────────────────────
   "COMMENT_NOT_FOUND", // 404 — no comment for the id
+  "CANNOT_REACT_TO_OWN", // 403 — owner cannot react to their own recap (M9 polish)
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -90,6 +91,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   MONTAGE_NOT_FOUND: 404,
   // ── Feed + social (M8) ─────────────────────────────────────────────────────
   COMMENT_NOT_FOUND: 404,
+  CANNOT_REACT_TO_OWN: 403,
 };
 
 // Base application error. Carries the taxonomy { code, status, message } so the
@@ -356,6 +358,13 @@ export class CommentNotFoundError extends AppError {
   constructor(message = "Comment not found") {
     super("COMMENT_NOT_FOUND", message);
     this.name = "CommentNotFoundError";
+  }
+}
+
+export class CannotReactToOwnError extends AppError {
+  constructor(message = "You cannot react to your own recap") {
+    super("CANNOT_REACT_TO_OWN", message);
+    this.name = "CannotReactToOwnError";
   }
 }
 

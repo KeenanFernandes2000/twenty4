@@ -100,7 +100,7 @@ export function Button({
     <>
       {leftIcon != null ? <View>{leftIcon}</View> : null}
       {label != null ? (
-        <Text variant={sz.fontVariant} weight={weight} color={textColor}>
+        <Text variant={sz.fontVariant} weight={weight} color={textColor} numberOfLines={1}>
           {label}
         </Text>
       ) : null}

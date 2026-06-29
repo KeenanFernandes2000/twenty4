@@ -28,12 +28,16 @@ const N = Date.now().toString().slice(-7);
 const OWNER = `+1500${N}`;
 const JOINER = `+1501${N}`;
 const STRANGER = `+1502${N}`;
+// A throwaway member used ONLY by the deleted-account roster test (it gets marked
+// account_status='deleted', so it must not be shared with any other test).
+const DELMEMBER = `+1503${N}`;
 const RACE_PHONES = Array.from({ length: 30 }, (_, i) => `+159${i.toString().padStart(2, "0")}${N}`);
-const ALL_PHONES = [OWNER, JOINER, STRANGER, ...RACE_PHONES];
+const ALL_PHONES = [OWNER, JOINER, STRANGER, DELMEMBER, ...RACE_PHONES];
 
 let owner: { token: string; userId: string };
 let joiner: { token: string; userId: string };
 let stranger: { token: string; userId: string };
+let delMember: { token: string; userId: string };
 
 beforeAll(async () => {
   // Build env FIRST — makeGroupEnv() runs loadEnvForTest() which populates
@@ -45,8 +49,8 @@ beforeAll(async () => {
   await flushInviteKeys(redis);
   await cleanupGroupsByPhones(db, ALL_PHONES);
   app = await buildGroupApp({ db, redis, env });
-  const seeded = await seedUsers(app, [OWNER, JOINER, STRANGER]);
-  [owner, joiner, stranger] = seeded;
+  const seeded = await seedUsers(app, [OWNER, JOINER, STRANGER, DELMEMBER]);
+  [owner, joiner, stranger, delMember] = seeded;
 });
 
 afterAll(async () => {
@@ -442,6 +446,33 @@ test("IDOR cross-group: ownerB cannot revoke/remove groupA's invite/member", asy
 
   // Cleanup: joiner leaves A so later tests reusing joiner start clean.
   await app.inject({ method: "POST", url: `/groups/${groupAId}/leave`, headers: bearer(joiner.token) });
+});
+
+// ── Deleted account never appears in a group roster (M9 polish) ──────────────
+// Defensive: even if purgeAccount's group_member deletion lagged or failed, a
+// deleted/anonymized account must not surface in GET /groups/{id}/members.
+test("members roster excludes a deleted account, keeps the active owner", async () => {
+  const groupId = await createGroup(owner.token, "Roster-Deleted");
+  const { code } = await createInvite(owner.token, groupId);
+  await app.inject({ method: "POST", url: `/invites/${code}/join`, headers: bearer(delMember.token) });
+
+  // Both members present before deletion.
+  const before = await app.inject({ method: "GET", url: `/groups/${groupId}/members`, headers: bearer(owner.token) });
+  expect(before.statusCode).toBe(200);
+  expect((before.json() as { userId: string }[]).map((m) => m.userId).sort()).toEqual(
+    [owner.userId, delMember.userId].sort(),
+  );
+
+  // Mark delMember's account deleted directly (the membership row is intentionally
+  // LEFT in place to prove the roster excludes by account_status, not just by the
+  // async membership-row deletion).
+  await db.sql`UPDATE "user" SET account_status = 'deleted' WHERE id = ${delMember.userId}`;
+
+  const after = await app.inject({ method: "GET", url: `/groups/${groupId}/members`, headers: bearer(owner.token) });
+  expect(after.statusCode).toBe(200);
+  const ids = (after.json() as { userId: string }[]).map((m) => m.userId);
+  expect(ids).toEqual([owner.userId]); // active owner kept, deleted member gone
+  expect(ids).not.toContain(delMember.userId);
 });
 
 // ── PATCH mass-assignment: only name/photoUrl mutable; status/ownerId ignored ─

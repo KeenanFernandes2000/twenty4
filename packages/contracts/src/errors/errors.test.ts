@@ -62,6 +62,7 @@ test("ERROR_STATUS is the canonical map", () => {
     RECAP_ALREADY_TODAY: 409,
     MONTAGE_NOT_FOUND: 404,
     COMMENT_NOT_FOUND: 404,
+    CANNOT_REACT_TO_OWN: 403,
   });
 });
 

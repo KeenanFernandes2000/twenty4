@@ -3,8 +3,9 @@
 // gets a Remove affordance (confirm → removeMember → invalidate members + detail).
 // Non-owners just see the roster. We read the caller's role from the cached group
 // detail (falling back to a fetch) and the current user id from the auth store.
+import { useCallback } from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ApiError } from '@twenty4/api-client';
 import type { GroupDTO, MemberDTO } from '@twenty4/contracts';
@@ -43,6 +44,15 @@ export default function MembersScreen() {
   });
   const group: GroupDTO | undefined = groupQuery.data;
   const isOwner = group?.role === 'owner';
+
+  // Re-fetch the roster whenever this screen regains focus, so a membership change
+  // made server-side while away (e.g. a member who deleted their account is now
+  // filtered out) shows up on return. Best-effort; no realtime needed.
+  useFocusEffect(
+    useCallback(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.groups.members(groupId) });
+    }, [groupId]),
+  );
 
   const removeMutation = useMutation<{ status: string }, unknown, string>({
     mutationFn: (userId) => api.removeMember(groupId, userId),

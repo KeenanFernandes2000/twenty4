@@ -108,7 +108,7 @@ export default function GroupsHomeScreen() {
           <View style={{ paddingTop: theme.spacing.base, flexDirection: 'row', gap: theme.spacing.base }}>
             <Button
               variant="primary"
-              title="Today’s captures →"
+              title="Today →"
               onPress={goToday}
               style={{ flex: 1 }}
               fullWidth

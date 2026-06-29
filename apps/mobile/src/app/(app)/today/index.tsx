@@ -5,9 +5,9 @@
 // already present in the server bucket (by id). Once the server bucket includes the
 // uploaded item, its local card drops → gap-free transition (no double-show).
 import { useMemo } from 'react';
-import { RefreshControl, ScrollView, View } from 'react-native';
+import { Image, RefreshControl, ScrollView, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Button, Screen, Text, useToast } from '@/ui';
+import { Button, Card, Screen, Text, useToast } from '@/ui';
 import { useTheme } from '@/theme';
 import { ScreenHeader } from '@/components/groups/ScreenHeader';
 import { EmptyState, ErrorRetry, ListSkeleton } from '@/components/QueryState';
@@ -21,7 +21,8 @@ import {
 import { ReadinessBanner } from '@/components/media/ReadinessBanner';
 import { UploadCard } from '@/components/media/UploadCard';
 import { TodayItemCard } from '@/components/media/TodayItemCard';
-import { useMontageStore, useMontageStarting } from '@/stores/montageStore';
+import { useMontage } from '@/lib/montage';
+import { useMontageStore, useMontageStarting, useCurrentMontage } from '@/stores/montageStore';
 
 export default function TodayScreen() {
   const theme = useTheme();
@@ -46,6 +47,23 @@ export default function TodayScreen() {
 
   const serverItems = todayQuery.data?.items ?? [];
   const serverIds = useMemo(() => new Set(serverItems.map((it) => it.id)), [serverItems]);
+
+  // M9: once today's recap is PUBLISHED, the Today screen reflects the published
+  // state instead of the raw capture grid (the server purges the raw media at the
+  // +grace mark; this is purely the UI catching up). We learn the published state
+  // from the in-session montage (the store's `current` id → its cached detail). No
+  // server list endpoint exists, so this covers the publish → back-to-Today flow;
+  // a cold start (no `current`) falls back to the normal grid.
+  const current = useCurrentMontage();
+  const montageQuery = useMontage(current?.id);
+  const todayBucket = todayQuery.data?.dayBucket;
+  const publishedMontage =
+    current &&
+    montageQuery.data?.status === 'published' &&
+    !!todayBucket &&
+    montageQuery.data.dayBucket === todayBucket
+      ? montageQuery.data
+      : null;
 
   // Dedupe: drop a `done` local card once the server bucket already includes its mediaId.
   const visibleUploads = useMemo<UploadItem[]>(
@@ -155,6 +173,41 @@ export default function TodayScreen() {
         refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
       >
+        {publishedMontage ? (
+          /* Published state — the raw capture grid is intentionally hidden now. */
+          <View style={{ gap: theme.spacing.base }} testID="today-published">
+            <Card variant="compact">
+              <View style={{ gap: theme.spacing.base }}>
+                {publishedMontage.thumbnailUrl ? (
+                  <Image
+                    source={{ uri: publishedMontage.thumbnailUrl }}
+                    style={{
+                      width: '100%',
+                      height: 220,
+                      borderRadius: theme.radii.md,
+                      backgroundColor: theme.colors.surface2,
+                    }}
+                    resizeMode="cover"
+                    testID="today-published-thumb"
+                  />
+                ) : null}
+                <Text variant="title">Today’s recap is published 🎉</Text>
+                <Text variant="caption" color="muted">
+                  Your captures from today have been turned into a recap and shared to your group — they’re
+                  no longer shown here.
+                </Text>
+                <Button
+                  variant="primary"
+                  fullWidth
+                  title="View recap"
+                  onPress={() => router.push(`/(app)/montage/${publishedMontage.id}`)}
+                  testID="today-view-recap"
+                />
+              </View>
+            </Card>
+          </View>
+        ) : (
+          <>
         {/* Capture CTAs */}
         <View style={{ flexDirection: 'row', gap: theme.spacing.base }}>
           <Button
@@ -216,6 +269,8 @@ export default function TodayScreen() {
           </Text>
           {renderTodayBucket()}
         </View>
+          </>
+        )}
       </ScrollView>
       </View>
     </Screen>

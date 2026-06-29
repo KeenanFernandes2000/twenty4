@@ -11,7 +11,9 @@ export const FEED_PAGE_SIZE = 10;
 // One published, unexpired, block-clean recap visible to the caller. `dayBucket`
 // is display-only — the feed keys visibility on `expiry_at`, not the calendar day
 // (M8 §11). Signed URLs carry a TTL ≤ remaining content lifetime. `canDelete` is
-// true on the viewer's own montage, `canReport` on others'.
+// true on the viewer's own montage, `canReport` on others'. `canReact` is false on
+// the viewer's OWN montage (an owner only SEES the counts; the route 403s a self-
+// reaction — M9 polish) and true on others'.
 export const feedCardSchema = z.object({
   montageId: z.string().uuid(),
   author: z.object({
@@ -31,6 +33,7 @@ export const feedCardSchema = z.object({
   commentPreview: z.array(commentDtoSchema),
   canDelete: z.boolean(),
   canReport: z.boolean(),
+  canReact: z.boolean(),
 });
 export type FeedCard = z.infer<typeof feedCardSchema>;
 

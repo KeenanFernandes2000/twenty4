@@ -68,6 +68,12 @@ export function FeedCard({
   };
   const comingSoon = (what: string) => toast.show({ type: 'info', message: `${what} is coming soon` });
 
+  // M9: the owner can't react to their own recap. The API returns `canReact:false`
+  // on own cards; `undefined` is treated as false (safe read-only default) so this
+  // works even before the parallel API change lands. Read-only → hide the tap-to-
+  // react bar, keep the reaction count visible.
+  const canReact = (card as FeedCardDTO & { canReact?: boolean }).canReact ?? false;
+
   const name = card.author.displayName ?? 'Someone';
   // Expired (countdown hit zero) but still cached → its signed URL likely 404s, so
   // don't autoplay a dead source; the countdown shows "Expired" and the server drops
@@ -150,17 +156,25 @@ export function FeedCard({
           ) : null}
         </View>
 
-        {/* ── Reaction bar + count ──────────────────────────────────────────── */}
+        {/* ── Reaction bar + count (owner = read-only: count only, no bar) ──── */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.base }}>
-          <ReactionBar
-            viewerReaction={card.viewerReaction}
-            onReact={onReact}
-            disabled={react.isPending}
-            testIDPrefix={`feed-react-${card.montageId}`}
-          />
+          {canReact ? (
+            <ReactionBar
+              viewerReaction={card.viewerReaction}
+              onReact={onReact}
+              disabled={react.isPending}
+              testIDPrefix={`feed-react-${card.montageId}`}
+            />
+          ) : null}
           {card.reactionCount > 0 ? (
             <Text variant="caption" color="muted" testID={`feed-reaction-count-${card.montageId}`}>
-              {card.reactionCount}
+              {canReact
+                ? card.reactionCount
+                : `${card.reactionCount} reaction${card.reactionCount === 1 ? '' : 's'}`}
+            </Text>
+          ) : !canReact ? (
+            <Text variant="caption" color="muted" testID={`feed-reaction-count-${card.montageId}`}>
+              No reactions yet
             </Text>
           ) : null}
         </View>

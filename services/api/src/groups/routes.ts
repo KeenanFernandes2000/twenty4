@@ -1,7 +1,7 @@
 // Group & invite routes (M3). All require a valid session (requireSession); every
 // error uses the contracts envelope. Group-scoped reads/writes go through the
 // shared authz gate (assertMemberOf / assertOwnerOf) — NO inline membership checks.
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   AlreadyMemberError,
@@ -368,7 +368,10 @@ export async function registerGroupRoutes(app: FastifyInstance, deps: GroupRoute
   );
 
   // ── GET /groups/{id}/members ──────────────────────────────────────────────
-  // Member-only; active members only.
+  // Member-only; active members only. Defensively EXCLUDE deleted/anonymized
+  // accounts: M9's purgeAccount deletes the user's group_member rows, but that is an
+  // async worker job — so a deleted account must never surface in a roster even if
+  // its membership-row deletion lags or fails (its display_name is NULL anyway).
   app.get(
     "/groups/:id/members",
     { preHandler: requireSession },
@@ -387,7 +390,13 @@ export async function registerGroupRoutes(app: FastifyInstance, deps: GroupRoute
         })
         .from(groupMember)
         .innerJoin(userTable, eq(userTable.id, groupMember.userId))
-        .where(and(eq(groupMember.groupId, id), eq(groupMember.status, "active")));
+        .where(
+          and(
+            eq(groupMember.groupId, id),
+            eq(groupMember.status, "active"),
+            ne(userTable.accountStatus, "deleted"),
+          ),
+        );
       const out: MemberDTO[] = rows.map((r) => ({
         userId: r.userId,
         role: r.role,

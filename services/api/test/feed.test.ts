@@ -153,6 +153,7 @@ describe("GET /feed — happy path", () => {
     expect(card.commentPreview).toEqual([]);
     expect(card.canReport).toBe(true); // B is not the author
     expect(card.canDelete).toBe(false);
+    expect(card.canReact).toBe(true); // B may react (not the owner)
   });
 
   test("A sees their OWN montage card (no self-exclusion)", async () => {
@@ -162,6 +163,7 @@ describe("GET /feed — happy path", () => {
     expect(card).toBeDefined();
     expect(card.canDelete).toBe(true); // own montage
     expect(card.canReport).toBe(false);
+    expect(card.canReact).toBe(false); // owner only SEES the counts (M9)
   });
 
   test("unauthenticated ⇒ 401", async () => {
@@ -200,6 +202,39 @@ describe("reactions round-trip", () => {
     expect(r3.json().count).toBe(0);
     expect(r3.json().viewerReaction).toBeNull();
     expect((await db.db.select().from(reaction).where(eq(reaction.montageId, id))).length).toBe(0);
+  });
+});
+
+// ── 2b. Owner cannot react to their OWN recap (M9 polish) ─────────────────────
+describe("owner cannot react to own recap", () => {
+  test("owner POST/DELETE reactions ⇒ 403; still sees count + canReact:false; member can react", async () => {
+    const id = await seedPublishedMontage(db, { userId: A.userId, groupId });
+
+    // A (owner) cannot set a reaction on their own montage.
+    const ownReact = await post(app, `/montages/${id}/reactions`, A.token, { type: "fire" });
+    expect(ownReact.statusCode).toBe(403);
+    expect(ownReact.json().error.code).toBe("CANNOT_REACT_TO_OWN");
+    // … and DELETE (clear) is gated symmetrically.
+    const ownClear = await del(app, `/montages/${id}/reactions`, A.token);
+    expect(ownClear.statusCode).toBe(403);
+    expect(ownClear.json().error.code).toBe("CANNOT_REACT_TO_OWN");
+
+    // A reaction was NOT created.
+    expect((await db.db.select().from(reaction).where(eq(reaction.montageId, id))).length).toBe(0);
+
+    // A non-owner member CAN react.
+    const memberReact = await post(app, `/montages/${id}/reactions`, B.token, { type: "heart" });
+    expect(memberReact.statusCode).toBe(200);
+    expect(memberReact.json().count).toBe(1);
+
+    // Owner still GETs the card: sees the count, canReact:false.
+    const card = cardFor((await get(app, "/feed", A.token)).json(), id);
+    expect(card).toBeDefined();
+    expect(card.reactionCount).toBe(1);
+    expect(card.canReact).toBe(false);
+    // The non-owner member's card shows canReact:true.
+    const memberCard = cardFor((await get(app, "/feed", B.token)).json(), id);
+    expect(memberCard.canReact).toBe(true);
   });
 });
 

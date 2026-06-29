@@ -516,6 +516,7 @@ function validFeedPage() {
         commentPreview: [],
         canDelete: false,
         canReport: true,
+        canReact: true,
       },
     ],
     nextCursor: "next",
