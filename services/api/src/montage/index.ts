@@ -10,6 +10,7 @@ import type { Auth } from "../auth/betterAuth.ts";
 import { createS3 } from "../media/s3.ts";
 import { createRenderMontageQueue, type RenderMontageJobData } from "./queue.ts";
 import { registerMontageRoutes } from "./routes.ts";
+import type { CleanupQueues } from "../cleanup/queue.ts";
 import type { DbClient } from "../db.ts";
 
 export interface RegisterMontageDeps {
@@ -19,6 +20,9 @@ export interface RegisterMontageDeps {
   // Optional injected queue (tests pass one so they can share/inspect it). When
   // omitted, a queue is created from REDIS_URL.
   queue?: Queue<RenderMontageJobData>;
+  // M9 cleanup queues — passed down from buildApp (shared with auth + admin) so
+  // publish/replace/delete enqueue the expire/raw-purge/delete jobs.
+  cleanupQueues?: CleanupQueues;
 }
 
 export async function registerMontage(app: FastifyInstance, deps: RegisterMontageDeps): Promise<void> {
@@ -31,7 +35,11 @@ export async function registerMontage(app: FastifyInstance, deps: RegisterMontag
     requireSession,
     s3,
     queue,
+    cleanupQueues: deps.cleanupQueues,
     minMedia: env.MONTAGE_MIN_MEDIA,
+    expiryHours: env.MONTAGE_EXPIRY_HOURS,
+    expirySec: env.MONTAGE_EXPIRY_SEC,
+    rawPurgeGraceMin: env.RAW_PURGE_GRACE_MIN,
     remotionDir: env.INFRA_REMOTION_DIR,
   });
 }

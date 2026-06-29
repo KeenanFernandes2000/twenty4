@@ -9,7 +9,8 @@ import { useRouter } from 'expo-router';
 import type { FeedCard as FeedCardDTO, ReactionType } from '@twenty4/contracts';
 import { Avatar, Card, Text, useToast } from '@/ui';
 import { useTheme } from '@/theme';
-import { useReact } from '@/lib/feed';
+import { confirm } from '@/lib/confirm';
+import { useDeleteMontage, useReact } from '@/lib/feed';
 import { FeedVideo } from './FeedVideo';
 import { ExpiryCountdown } from './ExpiryCountdown';
 import { ReactionBar } from './ReactionBar';
@@ -41,6 +42,7 @@ export function FeedCard({
   const router = useRouter();
   const toast = useToast();
   const react = useReact();
+  const del = useDeleteMontage();
 
   const onReact = (type: ReactionType) =>
     react.mutate({ montageId: card.montageId, type, current: card.viewerReaction });
@@ -48,11 +50,30 @@ export function FeedCard({
   const openPlayer = () => router.push(`/(app)/feed/${card.montageId}/player`);
   const openComments = () => router.push(`/(app)/feed/${card.montageId}/comments`);
 
-  // Report/delete are M12 write endpoints — render the affordance, no-op for now.
+  // M9: delete is REAL now (DELETE /montages/:id hard-deletes the recap + ALL its
+  // reactions/comments). Destructive-confirm → drop the card from the feed cache.
+  // Report stays a no-op affordance (the write endpoint is M12).
+  const onDelete = async () => {
+    const ok = await confirm({
+      title: 'Delete recap?',
+      message:
+        'This recap and all of its reactions and comments will be permanently deleted. This can’t be undone.',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
+    del.mutate(
+      { montageId: card.montageId },
+      { onError: () => toast.show({ type: 'error', message: 'Could not delete. Please try again.' }) },
+    );
+  };
   const comingSoon = (what: string) => toast.show({ type: 'info', message: `${what} is coming soon` });
 
   const name = card.author.displayName ?? 'Someone';
-  const showSoundToggle = Platform.OS !== 'web' && active && !!card.videoUrl;
+  // Expired (countdown hit zero) but still cached → its signed URL likely 404s, so
+  // don't autoplay a dead source; the countdown shows "Expired" and the server drops
+  // it from the feed on the next refetch.
+  const expired = new Date(card.expiryAt).getTime() <= Date.now();
+  const showSoundToggle = Platform.OS !== 'web' && active && !expired && !!card.videoUrl;
 
   return (
     <Card variant="compact">
@@ -71,9 +92,14 @@ export function FeedCard({
           <View style={{ alignItems: 'flex-end', gap: theme.spacing.xxs }}>
             <ExpiryCountdown expiryAt={card.expiryAt} testID={`feed-expiry-${card.montageId}`} />
             {card.canDelete ? (
-              <Pressable onPress={() => comingSoon('Delete')} hitSlop={8} testID={`feed-delete-${card.montageId}`}>
+              <Pressable
+                onPress={onDelete}
+                disabled={del.isPending}
+                hitSlop={8}
+                testID={`feed-delete-${card.montageId}`}
+              >
                 <Text variant="caption" color="danger">
-                  Delete
+                  {del.isPending ? 'Deleting…' : 'Delete'}
                 </Text>
               </Pressable>
             ) : card.canReport ? (
@@ -91,7 +117,7 @@ export function FeedCard({
           <FeedVideo
             uri={card.videoUrl}
             posterUri={card.thumbnailUrl}
-            active={active}
+            active={active && !expired}
             muted={!soundOn}
             loop
             contentFit="cover"

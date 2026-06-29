@@ -1,4 +1,7 @@
 # M9 — Ephemerality: the 24h hard-delete contract
+
+> **✅ DONE on rebuild/v2 — device-accepted (2026-06-29). ✅ MVP / Phase-1 Internal Alpha complete.** §6 deletion gate green (256 backend tests, 0 fail; adversarial review = SHIP, 1 MED + 5 LOW fixed). Migration `0007_abnormal_dagger` (additive: `montage.superseded_by` + `report` table). Minor post-acceptance UX polish tracked as a follow-up commit.
+
 > Spec phase: P1 · Depends on: M0–M8 (esp. M4 storage/upload, M7 montage+worker/BullMQ, M8 feed/reactions/comments) · Branch commit: one commit on `rebuild/v2` (the last MVP commit — **MVP / Phase-1 Internal Alpha completes here**)
 
 ## 1. Goal

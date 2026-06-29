@@ -14,6 +14,8 @@ import { registerGroups } from "./groups/index.ts";
 import { registerMedia } from "./media/index.ts";
 import { registerMontage } from "./montage/index.ts";
 import { registerFeed } from "./feed/index.ts";
+import { registerAdmin } from "./admin/index.ts";
+import { closeCleanupQueues, createCleanupQueues, type CleanupQueues } from "./cleanup/queue.ts";
 import type { DbClient } from "./db.ts";
 import type { RedisClient } from "./redis.ts";
 
@@ -31,6 +33,11 @@ export interface BuildAppOptions {
   // M7: optional injected render-montage queue (tests share/inspect one). When
   // omitted, registerMontage creates a queue from REDIS_URL.
   montageQueue?: import("bullmq").Queue<import("./montage/queue.ts").RenderMontageJobData>;
+  // M9: optional injected cleanup queues (the ephemerality pipeline's enqueue side —
+  // expire/raw-purge/purge-account/delete). When omitted (and redis+env present),
+  // buildApp creates+owns them and closes them on app.close(); tests inject isolated-
+  // name queues so no running worker drains the enqueues under inspection.
+  cleanupQueues?: CleanupQueues;
 }
 
 // Explicit CORS method list. v1's bug: @fastify/cors defaults to GET/HEAD/POST,
@@ -201,7 +208,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // ── M2 auth subsystem (/auth + /users) ─────────────────────────────────────
   // Registered only when redis + env are provided (M1-only tests skip it).
   if (opts.redis && opts.env) {
-    const { auth } = await registerAuth(app, { db, redis: opts.redis, env: opts.env });
+    // ── M9 cleanup queues (shared across auth + montage + admin) ───────────────
+    // buildApp owns them when not injected, and closes them on app.close() so a
+    // test (or boot) doesn't leak Redis connections; an injected set is owned by
+    // the caller (test) which closes it.
+    const ownCleanup = !opts.cleanupQueues;
+    const cleanupQueues = opts.cleanupQueues ?? createCleanupQueues(opts.env.REDIS_URL);
+    if (ownCleanup) {
+      app.addHook("onClose", async () => {
+        await closeCleanupQueues(cleanupQueues);
+      });
+    }
+
+    const { auth } = await registerAuth(app, { db, redis: opts.redis, env: opts.env, cleanupQueues });
     // ── M3 groups subsystem (/groups + /invites) — reuses the BA auth instance
     // for requireSession. Registered only alongside auth (M1-only tests skip it).
     await registerGroups(app, { db, redis: opts.redis, env: opts.env, auth });
@@ -209,12 +228,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // validate-media queue. Registered only alongside auth.
     await registerMedia(app, { db, env: opts.env, auth, queue: opts.mediaQueue });
     // ── M7 montage subsystem (/montages) — reuses the BA auth instance + S3 + the
-    // render-montage queue. Registered only alongside auth.
-    await registerMontage(app, { db, env: opts.env, auth, queue: opts.montageQueue });
+    // render-montage queue + M9 cleanup queues. Registered only alongside auth.
+    await registerMontage(app, { db, env: opts.env, auth, queue: opts.montageQueue, cleanupQueues });
     // ── M8 feed + social subsystem (/feed + /montages/:id/reactions + comments) —
     // reuses the BA auth instance + S3 + Redis (social rate limiter). Registered only
     // alongside auth (needs auth + redis + env).
     await registerFeed(app, { db, env: opts.env, auth, redis: opts.redis });
+    // ── M9 thin admin (/admin/cleanup-jobs + /admin/storage-usage) — read-only.
+    await registerAdmin(app, { db, auth, cleanupQueues });
   }
 
   return app;

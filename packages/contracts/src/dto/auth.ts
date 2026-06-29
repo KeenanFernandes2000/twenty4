@@ -120,3 +120,10 @@ export const updateMeReqSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: "at least one field is required" });
 export type UpdateMeReq = z.infer<typeof updateMeReqSchema>;
+
+// DELETE /users/me — triggers the M9 purge-account job (worker-async). Returns
+// fast; matches the current DELETE /users/me return shape.
+export const deleteAccountResSchema = z.object({
+  status: z.literal("deleted"),
+});
+export type DeleteAccountRes = z.infer<typeof deleteAccountResSchema>;

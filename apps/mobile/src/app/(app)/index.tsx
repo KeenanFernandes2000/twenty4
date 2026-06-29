@@ -44,15 +44,13 @@ export default function GroupsHomeScreen() {
   const goJoin = () => router.push('/(app)/join');
   const goToday = () => router.push('/(app)/today');
   const goFeed = () => router.push('/(app)/feed');
+  const goSettings = () => router.push('/(app)/settings');
 
   const headerRight = (
-    <Button
-      variant="ghost"
-      size="sm"
-      title="Sign out"
-      onPress={signOut}
-      testID="sign-out-button"
-    />
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
+      <Button variant="ghost" size="sm" title="Settings" onPress={goSettings} testID="settings-button" />
+      <Button variant="ghost" size="sm" title="Sign out" onPress={signOut} testID="sign-out-button" />
+    </View>
   );
 
   // ── Loading ────────────────────────────────────────────────────────────────

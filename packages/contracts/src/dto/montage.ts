@@ -75,6 +75,24 @@ export const publishMontageResSchema = z.object({
 });
 export type PublishMontageRes = z.infer<typeof publishMontageResSchema>;
 
+// ── POST /montages/:id/replace (M9 replace-before-expiry) ─────────────────────
+// Generates a NEW montage; on its successful publish the prior is hard-deleted and
+// `superseded_by` recorded. Mirrors the generate request (theme/music/media optional)
+// since replace needs whatever generate needs.
+export const replaceMontageReqSchema = z.object({
+  mediaIds: z.array(z.string().uuid()).optional(),
+  theme: themeEnum.optional(),
+  musicId: z.string().optional(),
+});
+export type ReplaceMontageReq = z.infer<typeof replaceMontageReqSchema>;
+
+// 202 body from POST /montages/:id/replace — the NEW montage's id + status.
+export const replaceMontageResSchema = z.object({
+  montageId: z.string().uuid(),
+  status: montageStatusEnum,
+});
+export type ReplaceMontageRes = z.infer<typeof replaceMontageResSchema>;
+
 // ── GET /montages/options (the theme + music picker feed) ─────────────────────
 export const montageOptionsResSchema = z.object({
   themes: z.array(themeEnum),

@@ -17,6 +17,7 @@
 //    M8 feed + M9 expiry sweeps.
 import { sql } from "drizzle-orm";
 import { check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { montageStatus } from "./enums.ts";
 import { user } from "./auth.ts";
 import { group } from "./groups.ts";
@@ -48,6 +49,12 @@ export const montage = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     expiryAt: timestamp("expiry_at", { withTimezone: true }),
+    // M9 supersede chain (replace-before-expiry): when a replacement montage
+    // publishes, the prior row's superseded_by points at the NEW montage (self-FK)
+    // so the prior is unambiguously dead and the §6 sweep can reclaim it even if the
+    // prior's delayed expire job is lost. ON DELETE SET NULL so the pointer never
+    // blocks the new montage's own eventual hard-delete.
+    supersededBy: uuid("superseded_by").references((): AnyPgColumn => montage.id, { onDelete: "set null" }),
   },
   (t) => [
     // Published ⇒ expiry_at set (the as-built invariant, M7 §4).

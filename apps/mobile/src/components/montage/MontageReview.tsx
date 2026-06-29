@@ -18,7 +18,8 @@ import { useTheme } from '@/theme';
 import { api } from '@/lib/api';
 import { queryKeys } from '@/lib/queryKeys';
 import { ScreenHeader } from '@/components/groups/ScreenHeader';
-import { useMontageOptions, usePublishMontage } from '@/lib/montage';
+import { confirm } from '@/lib/confirm';
+import { useMontageOptions, usePublishMontage, useReplaceMontage } from '@/lib/montage';
 import { useTodayBucket } from '@/lib/media';
 import { useMontageStore, useMontageStarting } from '@/stores/montageStore';
 import { MontagePreview } from '@/components/montage/MontagePreview';
@@ -79,6 +80,7 @@ export function MontageReview({ montage }: { montage: MontageDTO }) {
   const groupsQuery = useQuery({ queryKey: queryKeys.groups.list, queryFn: () => api.listGroups() });
   const todayQuery = useTodayBucket();
   const publish = usePublishMontage();
+  const replace = useReplaceMontage();
 
   // Cross-reference today's bucket so each source clip can show a real thumbnail.
   const mediaById = useMemo(() => {
@@ -132,6 +134,33 @@ export function MontageReview({ montage }: { montage: MontageDTO }) {
     );
   };
 
+  // M9 replace-before-expiry (owner-only; this screen only ever shows the caller's
+  // own montage). Generating a replacement and publishing it hard-deletes THIS recap
+  // plus all its reactions/comments — so warn, then route into the new montage's
+  // generate → review flow.
+  const onReplace = async () => {
+    const ok = await confirm({
+      title: 'Replace this recap?',
+      message:
+        'We’ll build a new recap for today. When you publish it, this recap — and all of its reactions and comments — is permanently discarded. This can’t be undone.',
+      confirmLabel: 'Replace',
+    });
+    if (!ok) return;
+    replace.mutate(
+      { id: montage.id },
+      {
+        onSuccess: (res) => {
+          // Point the in-flight tracker at the replacement and open its host screen
+          // (it polls generate → review just like a fresh montage).
+          useMontageStore.setState({ current: { id: res.montageId, status: res.status } });
+          router.replace(`/(app)/montage/${res.montageId}`);
+        },
+        onError: () =>
+          toast.show({ type: 'error', message: 'Could not start a replacement. Please try again.' }),
+      },
+    );
+  };
+
   const groups = groupsQuery.data ?? [];
 
   return (
@@ -177,6 +206,19 @@ export function MontageReview({ montage }: { montage: MontageDTO }) {
                     onPress={() => router.replace('/(app)/today')}
                     testID="montage-done"
                   />
+                  <Button
+                    variant="ghost"
+                    fullWidth
+                    title="Replace this recap"
+                    onPress={onReplace}
+                    loading={replace.isPending}
+                    disabled={replace.isPending}
+                    testID="montage-replace"
+                  />
+                  <Text variant="micro" color="muted">
+                    Replacing builds a new recap; publishing it permanently discards this one and its
+                    reactions and comments.
+                  </Text>
                 </View>
               </Card>
             </View>

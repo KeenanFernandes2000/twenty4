@@ -10,6 +10,7 @@ import { createWorkerS3, type WorkerS3 } from "./s3.ts";
 import { processValidateMedia, type ValidateMediaJobData } from "./validateMedia.ts";
 import { redisConnection, VALIDATE_MEDIA_QUEUE, Worker } from "./queue.ts";
 import { startRenderMontageWorker } from "./montage/worker.ts";
+import { startCleanupWorkers } from "./cleanup/queue.ts";
 
 export { processValidateMedia } from "./validateMedia.ts";
 export { createWorkerDb } from "./db.ts";
@@ -33,6 +34,34 @@ export { scoreClip } from "./intelligence/scoring/score.ts";
 export type { ScoredClip, ScoreClipInput } from "./intelligence/scoring/score.ts";
 export { buildEdl } from "./intelligence/edl/build.ts";
 export { selectTrack, loadManifest, loadBeatGrid } from "./montage/tracks.ts";
+
+// M9 ephemerality — cleanup primitives, sweeps, processors + queue wiring.
+// Exported so the §6 deletion suite drives the processors synchronously.
+export {
+  deleteMontageHard,
+  purgeRawMedia,
+  purgeAccount,
+  type CleanupDeps,
+  type DeleteMontageHooks,
+} from "./cleanup/primitives.ts";
+export {
+  sweepExpiries,
+  sweepRawPurge,
+  sweepDayClose,
+  sweepSnapshotPurge,
+} from "./cleanup/sweeps.ts";
+export {
+  processExpireMontage,
+  processRawPurge,
+  processPurgeAccount,
+  processDeleteMontage,
+  processSweepExpiries,
+  processRawPurgeSweep,
+  processDayCloseSweep,
+  processSnapshotPurgeSweep,
+} from "./cleanup/processors.ts";
+export { startCleanupWorkers } from "./cleanup/queue.ts";
+export { deleteObjectIdempotent } from "./cleanup/s3.ts";
 
 export interface StartWorkerDeps {
   env: Env;
@@ -63,9 +92,14 @@ export function startWorker(): void {
   console.log(`[worker] validate-media worker started (concurrency 1) on ${VALIDATE_MEDIA_QUEUE}`);
   const montageWorker = startRenderMontageWorker({ env, db, s3 });
   console.log(`[worker] render-montage worker started (concurrency 1) on render-montage`);
+  const cleanup = startCleanupWorkers({ env, db, s3 });
+  console.log(
+    `[worker] cleanup workers started (4 one-shot + 4 repeatable sweeps): ` +
+      `${cleanup.workers.map((w) => w.name).join(", ")}`,
+  );
 
   const shutdown = async () => {
-    await Promise.all([validateWorker.close(), montageWorker.close()]);
+    await Promise.all([validateWorker.close(), montageWorker.close(), cleanup.close()]);
     await db.sql.end({ timeout: 5 });
     process.exit(0);
   };

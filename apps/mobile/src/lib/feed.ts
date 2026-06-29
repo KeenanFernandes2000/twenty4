@@ -103,6 +103,21 @@ function patchFeedCard(qc: QueryClient, montageId: string, update: (c: FeedCard)
   }
 }
 
+/** Remove one card from every cached feed page (across all group variants). */
+function removeFeedCard(qc: QueryClient, montageId: string): void {
+  const entries = qc.getQueriesData<FeedInfinite>({ queryKey: ['feed', 'list'] });
+  for (const [key, data] of entries) {
+    if (!data) continue;
+    let changed = false;
+    const pages = data.pages.map((page) => {
+      if (!page.items.some((it) => it.montageId === montageId)) return page;
+      changed = true;
+      return { ...page, items: page.items.filter((it) => it.montageId !== montageId) };
+    });
+    if (changed) qc.setQueryData<FeedInfinite>(key, { ...data, pages });
+  }
+}
+
 /** Mutate the comments infinite cache for one montage (all pages). */
 function patchComments(
   qc: QueryClient,
@@ -262,6 +277,24 @@ export function useAddComment() {
 interface DeleteCommentVars {
   commentId: string;
   montageId: string;
+}
+
+// ── Delete own montage (M9 manual hard-delete) ───────────────────────────────
+
+/**
+ * DELETE /montages/:id — the owner manually hard-deletes their own recap NOW (the
+ * worker purges video/thumb/reactions/comments; the sweep is the backstop). On
+ * success we drop the card from every cached feed page so it vanishes immediately.
+ * The destructive-confirm copy lives at the call site (the FeedCard owner affordance).
+ */
+export function useDeleteMontage() {
+  const qc = useQueryClient();
+  return useMutation<{ status: string }, unknown, { montageId: string }>({
+    mutationFn: ({ montageId }) => api.deleteMontage(montageId),
+    onSuccess: (_res, { montageId }) => {
+      removeFeedCard(qc, montageId);
+    },
+  });
 }
 
 /** Soft-delete the caller's own comment; drop it from the list + card count/preview. */

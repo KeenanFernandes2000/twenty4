@@ -8,6 +8,7 @@ import { parseAdminEmails, reconcileAdmins } from "./adminSeed.ts";
 import { createOtpRateLimiter } from "./otpRateLimit.ts";
 import { createOtpTransport, type OtpTransport } from "./otpTransport.ts";
 import { registerAuthRoutes } from "./routes.ts";
+import type { CleanupQueues } from "../cleanup/queue.ts";
 import type { DbClient } from "../db.ts";
 import type { RedisClient } from "../redis.ts";
 import { createEmailService, type EmailService } from "../services/email.service.ts";
@@ -16,6 +17,9 @@ export interface RegisterAuthDeps {
   db: DbClient;
   redis: RedisClient;
   env: Env;
+  // M9 cleanup queues — DELETE /users/me enqueues purge-account. Optional so an
+  // M1-only test can still register auth (the enqueue helper no-ops on undefined).
+  cleanupQueues?: CleanupQueues;
 }
 
 export interface AuthSubsystem {
@@ -61,6 +65,7 @@ export async function registerAuth(app: FastifyInstance, deps: RegisterAuthDeps)
     adminEmails,
     nodeEnv: env.NODE_ENV,
     enableDevOtpRoute: env.ENABLE_DEV_OTP_ROUTE,
+    cleanupQueues: deps.cleanupQueues,
   });
 
   return { auth, email, otp };

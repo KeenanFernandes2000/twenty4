@@ -2,6 +2,7 @@
 // requireSession resolves a bearer/session token via BA's in-process getSession,
 // loads our user row, and attaches it to request.user. requireAdmin additionally
 // requires is_admin and writes an audit_log row per admin action.
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -10,6 +11,7 @@ import {
   AccountSuspendedError,
   ForbiddenError,
   UnauthorizedError,
+  sanitizeAuditMetadata,
 } from "@twenty4/contracts";
 import { auditLog, user as userTable } from "@twenty4/contracts/db";
 import type { Auth } from "./betterAuth.ts";
@@ -130,13 +132,17 @@ export function makeRequireAdmin(deps: GuardDeps) {
       if (!u.isAdmin) {
         throw new ForbiddenError("Admin privileges required");
       }
-      // Audit every admin action.
+      // Audit every admin action — routed through the SAME sanitize chokepoint as
+      // the deletion tombstones (no audit insert bypasses it), and the request ip is
+      // HASHED (short sha256 hex), never stored raw at rest. targetId stays the route
+      // (method + url), which carries no PII.
+      const ipHash = req.ip ? createHash("sha256").update(req.ip).digest("hex").slice(0, 16) : null;
       await db.db.insert(auditLog).values({
         actorId: u.id,
         action,
         targetType: "request",
         targetId: `${req.method} ${req.url}`,
-        metadata: { ip: req.ip ?? null },
+        metadata: sanitizeAuditMetadata(action, { ipHash }),
       });
     };
   };

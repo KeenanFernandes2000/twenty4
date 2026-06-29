@@ -26,6 +26,7 @@ import { buildDenyPathSet, normalizeDenyPath } from "./denyList.ts";
 import { assertActive, makeRequireAdmin, makeRequireSession } from "./guards.ts";
 import type { OtpRateLimiter } from "./otpRateLimit.ts";
 import type { OtpTransport } from "./otpTransport.ts";
+import { enqueuePurgeAccount, type CleanupQueues } from "../cleanup/queue.ts";
 import type { DbClient } from "../db.ts";
 
 export interface AuthRoutesDeps {
@@ -36,6 +37,8 @@ export interface AuthRoutesDeps {
   adminEmails: Set<string>;
   nodeEnv: string;
   enableDevOtpRoute?: boolean;
+  // M9 cleanup queues — DELETE /users/me enqueues purge-account (worker-async).
+  cleanupQueues?: CleanupQueues;
 }
 
 // Map our user row → the UserDTO wire shape.
@@ -307,7 +310,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRoutesD
   });
 
   // ── DELETE /users/me ───────────────────────────────────────────────────────
-  // Mark account deleted + revoke ALL sessions. S3/cascade purge is M9.
+  // Mark account deleted + revoke ALL sessions, then enqueue the M9 purge-account
+  // job (worker-async). The worker hard-deletes ALL the user's content (montages +
+  // S3, raw media, their reactions/comments on others' recaps) + writes a tombstone;
+  // the sweeps reclaim if the job drops. Returns fast.
   app.delete("/users/me", { preHandler: requireSession }, async (req: FastifyRequest, reply: FastifyReply) => {
     const u = req.user!;
     await db.db
@@ -315,6 +321,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRoutesD
       .set({ accountStatus: "deleted", updatedAt: new Date() })
       .where(eq(userTable.id, u.id));
     await db.db.delete(sessionTable).where(eq(sessionTable.userId, u.id));
+    await enqueuePurgeAccount(deps.cleanupQueues, u.id);
     reply.status(200).send({ status: "deleted" });
   });
 

@@ -380,6 +380,75 @@ describe("feed + social endpoints", () => {
   });
 });
 
+describe("ephemerality + admin endpoints (M9)", () => {
+  it("replaceMontage POSTs /montages/:id/replace and parses ReplaceMontageRes", async () => {
+    const stub = stubFetch(makeResponse(202, { montageId: GROUP_ID, status: "generating" }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.replaceMontage(MONTAGE_ID, { theme: "party" });
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/replace`);
+    expect(stub.calls[0]!.init.method).toBe("POST");
+    expect(stub.calls[0]!.init.body).toBe(JSON.stringify({ theme: "party" }));
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.montageId).toBe(GROUP_ID);
+    expect(res.status).toBe("generating");
+  });
+
+  it("deleteMontage DELETEs /montages/:id and returns {status:'deleting'}", async () => {
+    const stub = stubFetch(makeResponse(202, { status: "deleting" }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.deleteMontage(MONTAGE_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}`);
+    expect(stub.calls[0]!.init.method).toBe("DELETE");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.status).toBe("deleting");
+  });
+
+  it("getMontageDownloadUrl GETs /montages/:id/download-url and parses DownloadUrlRes", async () => {
+    const stub = stubFetch(makeResponse(200, { id: MONTAGE_ID, downloadUrl: "https://cdn.local/v.mp4", expiresInSec: 120 }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getMontageDownloadUrl(MONTAGE_ID);
+    expect(stub.calls[0]!.url).toBe(`${BASE}/montages/${MONTAGE_ID}/download-url`);
+    expect(stub.calls[0]!.init.method).toBe("GET");
+    expect(res.id).toBe(MONTAGE_ID);
+    expect(res.expiresInSec).toBe(120);
+  });
+
+  it("deleteAccount DELETEs /users/me and returns {status:'deleted'}", async () => {
+    const stub = stubFetch(makeResponse(200, { status: "deleted" }));
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.deleteAccount();
+    expect(stub.calls[0]!.url).toBe(`${BASE}/users/me`);
+    expect(stub.calls[0]!.init.method).toBe("DELETE");
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.status).toBe("deleted");
+  });
+
+  it("getCleanupJobs GETs /admin/cleanup-jobs and parses CleanupJobsRes", async () => {
+    const stub = stubFetch(
+      makeResponse(200, {
+        queues: [{ queue: "expire-montage", failed: 0, delayed: 2, jobs: [] }],
+      }),
+    );
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getCleanupJobs();
+    expect(stub.calls[0]!.url).toBe(`${BASE}/admin/cleanup-jobs`);
+    expect(headerOf(stub.calls[0]!.init, "authorization")).toBe("Bearer t");
+    expect(res.queues[0]!.queue).toBe("expire-montage");
+    expect(res.queues[0]!.delayed).toBe(2);
+  });
+
+  it("getStorageUsage GETs /admin/storage-usage and parses StorageUsageRes", async () => {
+    const stub = stubFetch(
+      makeResponse(200, { liveMontages: 5, publishedMontages: 3, rawMediaItems: 9, reactions: 4, comments: 2 }),
+    );
+    const client = createApiClient({ baseUrl: BASE, getToken: () => "t" });
+    const res = await client.getStorageUsage();
+    expect(stub.calls[0]!.url).toBe(`${BASE}/admin/storage-usage`);
+    expect(res.publishedMontages).toBe(3);
+    expect(res.reactions).toBe(4);
+  });
+});
+
 describe("missing baseUrl guard", () => {
   it("does NOT throw at construction, but rejects at request time with a clear ApiError", async () => {
     const prev = process.env.EXPO_PUBLIC_API_URL;

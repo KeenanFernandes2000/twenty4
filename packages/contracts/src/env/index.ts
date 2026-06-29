@@ -26,6 +26,12 @@ export const envSchema = z.object({
   S3_BUCKET_RAW: z.string().min(1, "S3_BUCKET_RAW is required"),
   S3_BUCKET_MONTAGES: z.string().min(1, "S3_BUCKET_MONTAGES is required"),
   S3_BUCKET_THUMBNAILS: z.string().min(1, "S3_BUCKET_THUMBNAILS is required"),
+  // Bucket reported-content snapshots are stored in (M9 snapshot-purge-sweep).
+  // Optional → resolves to S3_BUCKET_THUMBNAILS at the worker wiring site (snapshots
+  // are small image blobs), mirroring S3_PUBLIC_ENDPOINT's default-at-use idiom.
+  // M12 COUPLING TRAP: the report-WRITE flow MUST store snapshots in THIS bucket or
+  // sweepSnapshotPurge cannot reclaim them — pin it explicitly when M12 lands.
+  SNAPSHOT_BUCKET: z.string().optional(),
   // ── Media presign (M4) ──────────────────────────────────────────────────────
   // THE v1 lesson: SigV4 signs the Host header, so a presigned URL signed against
   // `localhost` is unusable from the phone. The S3 client that SIGNS presigned
@@ -108,6 +114,28 @@ export const envSchema = z.object({
   COMMENT_MAX_LENGTH: z.coerce.number().int().min(1).default(COMMENT_MAX_LENGTH),
   REACTION_SET_CAP: z.coerce.number().int().min(1).default(30),
   REACTION_WINDOW_SEC: z.coerce.number().int().min(1).default(60),
+
+  // ── Ephemerality / 24h hard-delete (M9) ─────────────────────────────────────
+  // ALL overridable so the §6 deletion suite runs a "24h" contract in seconds
+  // against the live stack. Units are as named (hours / minutes / seconds).
+  //  - MONTAGE_EXPIRY_HOURS:        published_at + this = expiry_at (the contract).
+  //  - MONTAGE_EXPIRY_SEC:          OPTIONAL sub-hour override; when set it WINS over
+  //                                 HOURS (published_at + this seconds = expiry_at), so
+  //                                 on-device acceptance (~2-min lifetime, spec §8) and
+  //                                 the §7 "24h expiry in seconds" run on the real path.
+  //  - RAW_PURGE_GRACE_MIN:         delay after publish before raw-media purge.
+  //  - SWEEP_*_INTERVAL_SEC:        repeatable reclaim-sweep cadences (lost-job backstops).
+  //  - SNAPSHOT_RETENTION_HOURS:    report snapshot retain window (default 7d) — the
+  //                                 slice-8 PII hole; drives snapshot-purge-sweep.
+  MONTAGE_EXPIRY_HOURS: z.coerce.number().int().min(1).default(24),
+  // Optional sub-hour override (seconds). Undefined when unset → falls back to HOURS.
+  MONTAGE_EXPIRY_SEC: z.coerce.number().int().min(1).optional(),
+  RAW_PURGE_GRACE_MIN: z.coerce.number().int().min(1).default(60),
+  SWEEP_EXPIRIES_INTERVAL_SEC: z.coerce.number().int().min(1).default(180),
+  SWEEP_RAW_PURGE_INTERVAL_SEC: z.coerce.number().int().min(1).default(180),
+  SWEEP_DAY_CLOSE_INTERVAL_SEC: z.coerce.number().int().min(1).default(1800),
+  SWEEP_SNAPSHOT_PURGE_INTERVAL_SEC: z.coerce.number().int().min(1).default(1800),
+  SNAPSHOT_RETENTION_HOURS: z.coerce.number().int().min(1).default(168),
 });
 
 export type Env = z.infer<typeof envSchema>;

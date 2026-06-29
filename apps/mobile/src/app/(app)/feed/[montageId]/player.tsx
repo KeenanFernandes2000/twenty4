@@ -27,15 +27,17 @@ export default function PlayerScreen() {
     else router.replace('/(app)/feed');
   };
 
-  // Cache miss (e.g. a cold deep-link straight to the player) — there's no
-  // single-card fetch endpoint, so guide back to the feed.
-  if (!card) {
+  // Cache miss (cold deep-link), OR the recap expired while cached (M9 — its signed
+  // URL now 404s, and the server has dropped it from the feed). Either way there's
+  // nothing to play, so guide back to the feed instead of choking on a dead URL.
+  const expired = !!card && new Date(card.expiryAt).getTime() <= Date.now();
+  if (!card || expired) {
     return (
       <Screen>
         <ScreenHeader title="Recap" onBack={goFeed} />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.xl }}>
           <Text variant="title" align="center">
-            This recap isn’t available
+            {expired ? 'This recap has expired' : 'This recap isn’t available'}
           </Text>
           <Button variant="secondary" title="Back to feed" onPress={goFeed} testID="player-back" />
         </View>

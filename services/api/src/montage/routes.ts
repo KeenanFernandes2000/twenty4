@@ -14,23 +14,35 @@ import {
   NotEnoughMediaError,
   RecapAlreadyTodayError,
   createMontageReqSchema,
+  downloadUrlResSchema,
   isValidTimezone,
   montageOptionsResSchema,
   publishMontageReqSchema,
   publishMontageResSchema,
   regenerateMontageReqSchema,
+  replaceMontageReqSchema,
+  replaceMontageResSchema,
   resolveDayBucket,
   themeEnum,
   type CreateMontageRes,
+  type DownloadUrlRes,
   type MontageDTO,
   type MontageStatus,
   type PublishMontageRes,
+  type ReplaceMontageRes,
   type Theme,
 } from "@twenty4/contracts";
 import { dailyMediaItem, montage, montageGroupVisibility, user } from "@twenty4/contracts/db";
 import { presignMontageGet, presignThumbGet, type S3Deps } from "../media/s3.ts";
 import { activeMembership } from "../groups/authz.ts";
 import { enqueueRenderMontage, renderMontageJobId, type RenderMontageJobData } from "./queue.ts";
+import {
+  cancelExpireMontage,
+  enqueueDeleteMontage,
+  enqueueExpireMontage,
+  enqueueRawPurge,
+  type CleanupQueues,
+} from "../cleanup/queue.ts";
 import { DEFAULT_THEME, defaultMusicId, loadTracks } from "./manifest.ts";
 import type { DbClient } from "../db.ts";
 import type { makeRequireSession } from "../auth/guards.ts";
@@ -40,15 +52,24 @@ export interface MontageRoutesDeps {
   requireSession: ReturnType<typeof makeRequireSession>;
   s3: S3Deps;
   queue: Queue<RenderMontageJobData>;
+  // M9 cleanup pipeline — the expire/raw-purge/delete enqueue side (the worker
+  // consumes). Optional so an M1-only / no-redis test can still register routes.
+  cleanupQueues?: CleanupQueues;
   // Min valid items required to generate (env MONTAGE_MIN_MEDIA, default 3).
   minMedia: number;
+  // M9 ephemerality clock (env, shortened in the §6 suite): published_at + this =
+  // expiry_at + the delayed expire-job delay (hours), and the raw-purge grace (min).
+  expiryHours: number;
+  // Optional sub-hour override (seconds) — WINS over expiryHours when set (undefined
+  // ⇒ keep the 24h-default contract). Enables the ~2-min on-device lifetime (spec §8).
+  expirySec?: number;
+  rawPurgeGraceMin: number;
   // Locates the bundled-music manifest (env INFRA_REMOTION_DIR).
   remotionDir: string;
 }
 
 type MontageRow = typeof montage.$inferSelect;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 // The constant retryable copy surfaced on MontageDTO.error when status=failed.
 const RENDER_FAILED_MESSAGE = "Render failed — please try again.";
 
@@ -121,11 +142,16 @@ async function resolveChosenMedia(
 // published recap's URLs must not outlive expiry_at).
 async function toMontageDto(s3: S3Deps, row: MontageRow): Promise<MontageDTO> {
   let ttl = s3.downloadTtlSec;
+  let expired = false;
   if (row.expiryAt) {
     const remaining = Math.floor((row.expiryAt.getTime() - Date.now()) / 1000);
-    ttl = Math.max(1, Math.min(ttl, remaining));
+    // Past expiry (expired-but-not-yet-swept): do NOT presign — a leaked 1s self-
+    // preview URL must die with the content, mirroring GET …/download-url's post-
+    // expiry 404. Only clamp when there is real lifetime left (remaining >= 1).
+    if (remaining <= 0) expired = true;
+    else ttl = Math.min(ttl, remaining);
   }
-  const previewReady = (row.status === "draft_ready" || row.status === "published") && !!row.videoPath;
+  const previewReady = !expired && (row.status === "draft_ready" || row.status === "published") && !!row.videoPath;
   const previewUrl = previewReady && row.videoPath ? await presignMontageGet(s3, row.videoPath, ttl) : null;
   return {
     id: row.id,
@@ -138,14 +164,19 @@ async function toMontageDto(s3: S3Deps, row: MontageRow): Promise<MontageDTO> {
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     expiryAt: row.expiryAt ? row.expiryAt.toISOString() : null,
     previewUrl,
-    thumbnailUrl: row.thumbnailPath ? await presignThumbGet(s3, row.thumbnailPath, ttl) : null,
+    thumbnailUrl: !expired && row.thumbnailPath ? await presignThumbGet(s3, row.thumbnailPath, ttl) : null,
     error: row.status === "failed" ? RENDER_FAILED_MESSAGE : null,
     sourceMediaIds: row.sourceMediaIds,
   };
 }
 
 export async function registerMontageRoutes(app: FastifyInstance, deps: MontageRoutesDeps): Promise<void> {
-  const { db, requireSession, s3, queue, minMedia, remotionDir } = deps;
+  const { db, requireSession, s3, queue, cleanupQueues, minMedia, expiryHours, expirySec, rawPurgeGraceMin, remotionDir } = deps;
+  // Resolve the publish→expiry span once: a set MONTAGE_EXPIRY_SEC (sub-hour) WINS
+  // over MONTAGE_EXPIRY_HOURS; unset ⇒ the unchanged 24h-default contract. The expire-
+  // job delay is derived downstream from (expiry_at - now), so short spans just work.
+  const expiryMs = expirySec !== undefined ? expirySec * 1000 : expiryHours * 60 * 60 * 1000;
+  const rawPurgeGraceMs = rawPurgeGraceMin * 60 * 1000;
 
   // ── POST /montages (generate today's recap) ─────────────────────────────────
   // Find-or-create one recap per (user, today). Status machine:
@@ -357,7 +388,12 @@ export async function registerMontageRoutes(app: FastifyInstance, deps: MontageR
         await lockUserDay(tx, u.id, String(row.dayBucket));
 
         // One recap per (user, group, day): reject if ANOTHER montage of this user
-        // for the same day_bucket is already visible in a target group.
+        // for the same day_bucket is already visible in a target group. EXCEPTION:
+        // a prior montage being REPLACED by this one (prior.superseded_by = id) is
+        // NOT a clash — the replacement publishes into the same group the prior holds,
+        // then the prior is hard-deleted on this publish (M9 replace contract). `IS
+        // DISTINCT FROM` keeps a normal clash (superseded_by NULL or some other id)
+        // while excluding only the prior this publish supersedes.
         for (const groupId of body.groupIds) {
           const clash = await tx
             .select({ mid: montageGroupVisibility.montageId })
@@ -369,6 +405,7 @@ export async function registerMontageRoutes(app: FastifyInstance, deps: MontageR
                 eq(montage.userId, u.id),
                 eq(montage.dayBucket, String(row.dayBucket)),
                 ne(montageGroupVisibility.montageId, id),
+                sql`${montage.supersededBy} IS DISTINCT FROM ${id}::uuid`,
               ),
             )
             .limit(1);
@@ -382,11 +419,15 @@ export async function registerMontageRoutes(app: FastifyInstance, deps: MontageR
           .onConflictDoNothing();
 
         // Set published once; an idempotent re-publish keeps the original timestamps.
+        // expiry_at = published_at + expiryMs (MONTAGE_EXPIRY_SEC override when set, else
+        // MONTAGE_EXPIRY_HOURS; env-shortened in the §6 suite); the DB CHECK guarantees a
+        // published row always carries an expiry.
         let publishedAt = row.publishedAt;
         let expiryAt = row.expiryAt;
-        if (row.status !== "published") {
+        const firstPublish = row.status !== "published";
+        if (firstPublish) {
           publishedAt = new Date();
-          expiryAt = new Date(publishedAt.getTime() + DAY_MS);
+          expiryAt = new Date(publishedAt.getTime() + expiryMs);
           await tx
             .update(montage)
             .set({ status: "published", publishedAt, expiryAt })
@@ -399,8 +440,40 @@ export async function registerMontageRoutes(app: FastifyInstance, deps: MontageR
           .from(montageGroupVisibility)
           .where(eq(montageGroupVisibility.montageId, id));
 
-        return { publishedAt: publishedAt!, expiryAt: expiryAt!, groupIds: visRows.map((r) => r.groupId) };
+        return {
+          firstPublish,
+          publishedAt: publishedAt!,
+          expiryAt: expiryAt!,
+          groupIds: visRows.map((r) => r.groupId),
+        };
       });
+
+      // M9 publish-time enqueue wiring — first publish ONLY (an idempotent
+      // re-publish must NOT re-arm the clock or re-run replace-completion).
+      if (result.firstPublish) {
+        // (1) Delayed expire-montage — the authoritative 24h hard-delete clock.
+        const expireDelay = Math.max(0, result.expiryAt.getTime() - Date.now());
+        await enqueueExpireMontage(cleanupQueues, id, expireDelay);
+        // (2) Delayed raw-media purge (+grace) for this user/day's source media.
+        await enqueueRawPurge(cleanupQueues, {
+          montageId: id,
+          dayBucket: String(row.dayBucket),
+          userId: u.id,
+          delayMs: rawPurgeGraceMs,
+        });
+        // (3) Replace-completion — if THIS montage superseded a prior (prior.
+        // superseded_by = id was set at replace time), the prior is now unambiguously
+        // dead: hard-delete it + best-effort cancel its (now-stale) expire job. The
+        // sweep reclaims the prior even if this delete is dropped (§6 regression #1).
+        const priors = await db.db
+          .select({ id: montage.id })
+          .from(montage)
+          .where(eq(montage.supersededBy, id));
+        for (const p of priors) {
+          await enqueueDeleteMontage(cleanupQueues, p.id, "replaced");
+          await cancelExpireMontage(cleanupQueues, p.id);
+        }
+      }
 
       const res: PublishMontageRes = {
         id,
@@ -410,6 +483,127 @@ export async function registerMontageRoutes(app: FastifyInstance, deps: MontageR
         groupIds: result.groupIds,
       };
       reply.status(200).send(publishMontageResSchema.parse(res));
+    },
+  );
+
+  // ── POST /montages/:id/replace (M9 replace-before-expiry) ────────────────────
+  // Owner-only. `:id` is the PRIOR (currently-published) montage. Generates a NEW
+  // montage (status=generating, same render pipeline as POST /montages) and points
+  // the prior at it IMMEDIATELY (prior.superseded_by = new.id) — the shared supersede
+  // contract. The prior STAYS published + feed-served until the new one publishes
+  // (its render could fail; the prior must remain live). On the new montage's publish
+  // success the prior is hard-deleted (handled in publish above). Idempotent: a
+  // double-replace whose prior already points at a still-alive successor returns that
+  // successor rather than spawning another (advisory-lock-serialized, M8 lever).
+  app.post("/montages/:id/replace", { preHandler: requireSession }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const u = req.user!;
+    const body = replaceMontageReqSchema.parse(bodyOrEmpty(req.body));
+
+    // Owner + precondition (only a published montage can be replaced).
+    const prior = await loadOwnedMontage(db, id, u.id);
+    if (prior.status !== "published") {
+      throw new ConflictError("Only a published montage can be replaced");
+    }
+
+    const theme: Theme = body.theme ?? (prior.theme as Theme);
+    const musicId = body.musicId ?? prior.musicId;
+
+    const decision = await db.db.transaction(async (tx) => {
+      await lockUserDay(tx, u.id, String(prior.dayBucket));
+
+      // Re-read the prior under the lock so a racing replace can't double-spawn.
+      const freshRows = await tx.select().from(montage).where(eq(montage.id, id)).limit(1);
+      const fresh = freshRows[0];
+      if (!fresh || fresh.userId !== u.id) throw new MontageNotFoundError();
+
+      // Idempotency: already superseded by a STILL-ALIVE successor → return it.
+      if (fresh.supersededBy) {
+        const succRows = await tx.select().from(montage).where(eq(montage.id, fresh.supersededBy)).limit(1);
+        const succ = succRows[0];
+        if (succ) return { row: succ, action: "none" as const };
+        // Successor gone (e.g. its render failed and it was deleted) → re-spawn.
+      }
+
+      // Resolve the replacement's candidate media from the prior's day_bucket.
+      const chosen = await resolveChosenMedia(tx, u.id, String(fresh.dayBucket), body.mediaIds);
+      if (chosen.length < minMedia) {
+        throw new NotEnoughMediaError(`Need at least ${minMedia} valid items to replace (have ${chosen.length})`);
+      }
+
+      const inserted = await tx
+        .insert(montage)
+        .values({ userId: u.id, dayBucket: String(fresh.dayBucket), status: "generating", theme, musicId, sourceMediaIds: chosen })
+        .returning();
+      const newRow = inserted[0]!;
+      // Point the prior at the new montage NOW (the supersede contract): even if the
+      // prior's expire job is later lost, sweep-expiries reclaims it (superseded_by
+      // set + successor published).
+      await tx.update(montage).set({ supersededBy: newRow.id }).where(eq(montage.id, id));
+      return { row: newRow, action: "create" as const };
+    });
+
+    // Already-superseded idempotent path — return the live successor, no re-enqueue.
+    if (decision.action === "none") {
+      const res: ReplaceMontageRes = { montageId: decision.row.id, status: decision.row.status };
+      reply.status(202).send(replaceMontageResSchema.parse(res));
+      return;
+    }
+
+    // We claimed a render — enqueue exactly once. On throw, release the claim: clear
+    // the prior's superseded_by pointer + drop the just-created row (keeps the prior
+    // live + replaceable; mirrors generate's catch-rollback).
+    try {
+      await enqueueRenderMontage(queue, decision.row.id);
+      await db.db.update(montage).set({ renderJobId: renderMontageJobId(decision.row.id) }).where(eq(montage.id, decision.row.id));
+    } catch (err) {
+      await db.db.update(montage).set({ supersededBy: null }).where(eq(montage.id, id));
+      await db.db.delete(montage).where(eq(montage.id, decision.row.id));
+      throw err;
+    }
+
+    const res: ReplaceMontageRes = { montageId: decision.row.id, status: "generating" };
+    reply.status(202).send(replaceMontageResSchema.parse(res));
+  });
+
+  // ── DELETE /montages/:id (M9 manual hard-delete) ─────────────────────────────
+  // Owner-only. Enqueues delete-montage (reason=deleted_by_user); the worker runs
+  // deleteMontageHard (S3-first then the row + child cascade + tombstone). Returns
+  // fast (202 {status:"deleting"}); sweep-expiries is the backstop if the job drops.
+  // Missing OR not-owned → the SAME 404 (no existence leak). Idempotent: the
+  // deterministic jobId dedups a double-delete.
+  app.delete("/montages/:id", { preHandler: requireSession }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const u = req.user!;
+    await loadOwnedMontage(db, id, u.id); // 404 on missing / not-owned
+    await enqueueDeleteMontage(cleanupQueues, id, "deleted_by_user");
+    reply.status(202).send({ status: "deleting" });
+  });
+
+  // ── GET /montages/:id/download-url (M9 clamped presign) ──────────────────────
+  // Owner-only short-TTL signed GET of the rendered montage, with the TTL CLAMPED to
+  // the recap's remaining lifetime (min(defaultTtl, expiry_at - now)) so a leaked URL
+  // dies with the content. Not-ready / no video / EXPIRED / gone → 404 (no-leak,
+  // mirroring media + the M8 feed surface).
+  app.get(
+    "/montages/:id/download-url",
+    { preHandler: requireSession },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { id } = req.params as { id: string };
+      const u = req.user!;
+      const row = await loadOwnedMontage(db, id, u.id);
+      if (!row.videoPath || (row.status !== "draft_ready" && row.status !== "published")) {
+        throw new MontageNotFoundError("Montage is not available for download");
+      }
+      let ttl = s3.downloadTtlSec;
+      if (row.expiryAt) {
+        const remaining = Math.floor((row.expiryAt.getTime() - Date.now()) / 1000);
+        if (remaining <= 0) throw new MontageNotFoundError("Montage has expired");
+        ttl = Math.min(ttl, remaining);
+      }
+      const downloadUrl = await presignMontageGet(s3, row.videoPath, ttl);
+      const res: DownloadUrlRes = { id: row.id, downloadUrl, expiresInSec: ttl };
+      reply.status(200).send(downloadUrlResSchema.parse(res));
     },
   );
 }

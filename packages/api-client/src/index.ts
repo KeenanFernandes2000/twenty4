@@ -18,6 +18,7 @@
 import { z } from "zod";
 import {
   addCommentResSchema,
+  cleanupJobsResSchema,
   commentsPageSchema,
   createMontageResSchema,
   downloadUrlResSchema,
@@ -35,7 +36,9 @@ import {
   montageOptionsResSchema,
   publishMontageResSchema,
   reactionSummarySchema,
+  replaceMontageResSchema,
   sessionDtoSchema,
+  storageUsageResSchema,
   userDtoSchema,
 } from "@twenty4/contracts";
 import type {
@@ -44,6 +47,7 @@ import type {
   AuthStartReq,
   AuthVerifyReq,
   Channel,
+  CleanupJobsRes,
   CommentsPage,
   CreateGroupReq,
   CreateMontageReq,
@@ -70,7 +74,10 @@ import type {
   ReactionSummary,
   ReactionType,
   RegenerateMontageReq,
+  ReplaceMontageReq,
+  ReplaceMontageRes,
   SessionDTO,
+  StorageUsageRes,
   UpdateMeReq,
   UserDTO,
 } from "@twenty4/contracts";
@@ -137,6 +144,7 @@ type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type AuthStartRes = { status: "sent"; channel: Channel };
 type LogoutRes = { status: "logged_out" };
 type DeletedRes = { status: "deleted" };
+type DeletingRes = { status: "deleting" };
 type ArchivedRes = { status: "archived" };
 type RevokedRes = { status: "revoked" };
 type RemovedRes = { status: "removed" };
@@ -273,6 +281,12 @@ export function createApiClient(opts: ApiClientOptions = {}) {
     deleteMe(): Promise<DeletedRes> {
       return request<DeletedRes>("DELETE", "/users/me", { auth: true });
     },
+    // M9 alias — same DELETE /users/me; triggers the worker-async purge-account job
+    // (all the user's content gone, sessions revoked). The account-deletion confirm
+    // flow calls this.
+    deleteAccount(): Promise<DeletedRes> {
+      return request<DeletedRes>("DELETE", "/users/me", { auth: true });
+    },
 
     // ── Groups ──────────────────────────────────────────────────────────────
     listGroups(): Promise<GroupDTO[]> {
@@ -393,6 +407,30 @@ export function createApiClient(opts: ApiClientOptions = {}) {
         schema: publishMontageResSchema,
       });
     },
+    // ── Ephemerality (M9) ──────────────────────────────────────────────────────
+    // `replaceMontage`: generate a replacement for a published recap; on the new
+    // recap's publish the prior is hard-deleted (warn the user prior reactions/
+    // comments are discarded). Returns 202 {montageId:new, status:'generating'}.
+    replaceMontage(id: string, body: ReplaceMontageReq = {}): Promise<ReplaceMontageRes> {
+      return request<ReplaceMontageRes>("POST", `/montages/${encodeURIComponent(id)}/replace`, {
+        body,
+        auth: true,
+        schema: replaceMontageResSchema,
+      });
+    },
+    // Manual hard-delete now (202 {status:'deleting'}; the worker purges + the sweep
+    // is the backstop).
+    deleteMontage(id: string): Promise<DeletingRes> {
+      return request<DeletingRes>("DELETE", `/montages/${encodeURIComponent(id)}`, { auth: true });
+    },
+    // Owner-only signed GET of the rendered recap, TTL clamped to remaining lifetime;
+    // 404 once expired/gone.
+    getMontageDownloadUrl(id: string): Promise<DownloadUrlRes> {
+      return request<DownloadUrlRes>("GET", `/montages/${encodeURIComponent(id)}/download-url`, {
+        auth: true,
+        schema: downloadUrlResSchema,
+      });
+    },
 
     // ── Feed + social (M8) ────────────────────────────────────────────────────
     // Keyset-paginated feed of visible, unexpired, block-clean recaps; react/comment
@@ -436,6 +474,15 @@ export function createApiClient(opts: ApiClientOptions = {}) {
       return request<{ commentCount: number }>("DELETE", `/comments/${encodeURIComponent(commentId)}`, {
         auth: true,
       });
+    },
+
+    // ── Admin (M9 thin read-only) ───────────────────────────────────────────────
+    // Admin-guarded: a read of failed/lost cleanup jobs + the live storage footprint.
+    getCleanupJobs(): Promise<CleanupJobsRes> {
+      return request<CleanupJobsRes>("GET", "/admin/cleanup-jobs", { auth: true, schema: cleanupJobsResSchema });
+    },
+    getStorageUsage(): Promise<StorageUsageRes> {
+      return request<StorageUsageRes>("GET", "/admin/storage-usage", { auth: true, schema: storageUsageResSchema });
     },
   };
 }

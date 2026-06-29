@@ -12,7 +12,13 @@
 // cycle). No screen is imported here. Mirrors @/lib/media's idioms (the
 // refetchInterval-callback poll that reads q.state.data).
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { MontageDTO, MontageStatus, PublishMontageReq, PublishMontageRes } from '@twenty4/contracts';
+import type {
+  MontageDTO,
+  MontageStatus,
+  PublishMontageReq,
+  PublishMontageRes,
+  ReplaceMontageRes,
+} from '@twenty4/contracts';
 import { api } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
 import { queryKeys } from '@/lib/queryKeys';
@@ -72,5 +78,19 @@ export function usePublishMontage() {
       }
       void queryClient.invalidateQueries({ queryKey: queryKeys.montage.detail(id) });
     },
+  });
+}
+
+/**
+ * M9 replace-before-expiry: generate a REPLACEMENT for a published recap. The
+ * server creates a NEW montage (status `generating`) and, on the new montage's
+ * successful publish, hard-deletes the prior recap + ALL its reactions/comments.
+ * Returns the new montage's `{montageId,status}` so the caller can route into the
+ * host screen (generate → review) for the replacement. The destructive-confirm copy
+ * (prior reactions/comments are discarded) lives at the call site.
+ */
+export function useReplaceMontage() {
+  return useMutation<ReplaceMontageRes, unknown, { id: string }>({
+    mutationFn: ({ id }) => api.replaceMontage(id),
   });
 }
